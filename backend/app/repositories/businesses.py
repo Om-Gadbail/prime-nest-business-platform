@@ -19,6 +19,12 @@ def get_by_slug(db: Session, slug: str) -> Business | None:
     return db.execute(stmt).scalars().first()
 
 
+def get_by_external_id(db: Session, external_id: str) -> Business | None:
+    """Fetch by stable platform key (e.g. ``prime-fitness-001``)."""
+    stmt = select(Business).where(Business.external_id == external_id.strip())
+    return db.execute(stmt).scalars().first()
+
+
 def list_all(db: Session) -> list[Business]:
     return list(db.execute(select(Business).order_by(Business.slug)).scalars().all())
 

@@ -22,6 +22,22 @@ class Business(Base, TimestampMixin):
     business_type: Mapped[str] = mapped_column(String(32), nullable=False, default="other")
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="active")
 
+    # --- Multi-business foundation (Prompt 2) ---
+    # Stable platform-wide business key (e.g. "prime-fitness-001"). Survives
+    # renames/re-seeds; the UUID PK stays the internal FK target. NULL only
+    # for rows created before migration 0008 backfilled them.
+    external_id: Mapped[str | None] = mapped_column(
+        String(64), unique=True, nullable=True, index=True
+    )
+    # Trusted operational-database routing key ("prime_db" / "nest_db" / ...).
+    # NEVER set from client input — written by seed/migrations/platform ops
+    # and read by app/core/db_routing.py. Empty/unknown => fail closed.
+    database_key: Mapped[str] = mapped_column(String(32), nullable=False, default="")
+    # Opaque reference to the business configuration source (seed template
+    # name, config file, or future provisioning record). Informational only;
+    # never used for database routing.
+    config_ref: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
     timezone: Mapped[str | None] = mapped_column(String(64), nullable=True, default="UTC")
     currency: Mapped[str | None] = mapped_column(String(8), nullable=True)
     locale: Mapped[str | None] = mapped_column(String(16), nullable=True)

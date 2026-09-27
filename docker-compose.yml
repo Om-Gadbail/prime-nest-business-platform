@@ -16,11 +16,27 @@ services:
       timeout: 5s
       retries: 10
 
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
   backend:
     build: ./backend
     restart: unless-stopped
     depends_on:
       db:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     environment:
       APP_ENV: ${APP_ENV:-development}
@@ -28,7 +44,18 @@ services:
       APP_VERSION: ${APP_VERSION:-0.1.0}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-app_db}
-      BACKEND_CORS_ORIGINS: ${BACKEND_CORS_ORIGINS:-http://localhost:3000,http://localhost:5173}
+      # Prompt 2 multi-business targets: empty = co-located on DATABASE_URL.
+      # Set distinct URLs (after the data-migration runbook) to split physically.
+      PLATFORM_DATABASE_URL: ${PLATFORM_DATABASE_URL:-}
+      PRIME_DATABASE_URL: ${PRIME_DATABASE_URL:-}
+      NEST_DATABASE_URL: ${NEST_DATABASE_URL:-}
+      # Unified platform owner seed (demo default; production MUST override).
+      OWNER_SEED_EMAIL: ${OWNER_SEED_EMAIL:-owner@prime-nest-dashboard.com}
+      OWNER_SEED_PASSWORD: ${OWNER_SEED_PASSWORD:-OwnerDemo123!}
+      SEED_PLATFORM_OWNER: ${SEED_PLATFORM_OWNER:-true}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      BACKEND_CORS_ORIGINS: ${BACKEND_CORS_ORIGINS:-http://localhost:3000,http://localhost:5173,http://localhost:5174}
+      PUBLIC_SITE_ORIGINS: ${PUBLIC_SITE_ORIGINS:-http://localhost:5173,http://localhost:5174}
       SECRET_KEY: ${SECRET_KEY:-change-me-in-production}
       JWT_SECRET_KEY: ${JWT_SECRET_KEY:-}
       JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
@@ -36,8 +63,144 @@ services:
       REFRESH_TOKEN_EXPIRE_DAYS: ${REFRESH_TOKEN_EXPIRE_DAYS:-14}
       AUTH_COOKIE_SECURE: ${AUTH_COOKIE_SECURE:-false}
       AUTH_COOKIE_SAMESITE: ${AUTH_COOKIE_SAMESITE:-lax}
+      RATE_LIMIT_ENABLED: ${RATE_LIMIT_ENABLED:-true}
+      RATE_LIMIT_REQUESTS: ${RATE_LIMIT_REQUESTS:-120}
+      RATE_LIMIT_WINDOW_SECONDS: ${RATE_LIMIT_WINDOW_SECONDS:-60}
+      RATE_LIMIT_PUBLIC_REQUESTS: ${RATE_LIMIT_PUBLIC_REQUESTS:-20}
+      RATE_LIMIT_PUBLIC_WINDOW_SECONDS: ${RATE_LIMIT_PUBLIC_WINDOW_SECONDS:-600}
+      RATE_LIMIT_AUTH_REQUESTS: ${RATE_LIMIT_AUTH_REQUESTS:-30}
+      RATE_LIMIT_AUTH_WINDOW_SECONDS: ${RATE_LIMIT_AUTH_WINDOW_SECONDS:-300}
+      MAX_BODY_BYTES: ${MAX_BODY_BYTES:-65536}
+      AI_ENABLED: ${AI_ENABLED:-false}
+      AI_PROVIDER: ${AI_PROVIDER:-noop}
+      AI_MODEL: ${AI_MODEL:-}
+      AI_TIMEOUT_SECONDS: ${AI_TIMEOUT_SECONDS:-20}
+      AI_MAX_INPUT_CHARS: ${AI_MAX_INPUT_CHARS:-8000}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.0-flash}
+      AI_MAX_OUTPUT_TOKENS: ${AI_MAX_OUTPUT_TOKENS:-1024}
+      AI_MAX_TOOL_CALLS: ${AI_MAX_TOOL_CALLS:-6}
+      AI_PUBLIC_CHAT_ENABLED: ${AI_PUBLIC_CHAT_ENABLED:-true}
+      AI_PUBLIC_RATE_REQUESTS: ${AI_PUBLIC_RATE_REQUESTS:-10}
+      AI_PUBLIC_RATE_WINDOW_SECONDS: ${AI_PUBLIC_RATE_WINDOW_SECONDS:-600}
+      WHATSAPP_ENABLED: ${WHATSAPP_ENABLED:-false}
+      WHATSAPP_ACCESS_TOKEN: ${WHATSAPP_ACCESS_TOKEN:-}
+      WHATSAPP_PHONE_NUMBER_ID: ${WHATSAPP_PHONE_NUMBER_ID:-}
+      WHATSAPP_PHONE_NUMBER_MAP: ${WHATSAPP_PHONE_NUMBER_MAP:-}
+      WHATSAPP_BUSINESS_ACCOUNT_ID: ${WHATSAPP_BUSINESS_ACCOUNT_ID:-}
+      WHATSAPP_VERIFY_TOKEN: ${WHATSAPP_VERIFY_TOKEN:-}
+      WHATSAPP_APP_SECRET: ${WHATSAPP_APP_SECRET:-}
+      AUTOMATION_ENABLED: ${AUTOMATION_ENABLED:-true}
+      AUTOMATION_MAX_ATTEMPTS: ${AUTOMATION_MAX_ATTEMPTS:-5}
+      SCHEDULER_ENABLED: ${SCHEDULER_ENABLED:-true}
+      SCHEDULER_INTERVAL_SECONDS: ${SCHEDULER_INTERVAL_SECONDS:-60}
+      SCHEDULER_LEASE_SECONDS: ${SCHEDULER_LEASE_SECONDS:-120}
+      WORKER_ENABLED: ${WORKER_ENABLED:-true}
+      WORKER_INTERVAL_SECONDS: ${WORKER_INTERVAL_SECONDS:-15}
+      WORKER_BATCH_SIZE: ${WORKER_BATCH_SIZE:-50}
     ports:
       - "${BACKEND_PORT:-8000}:8000"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=5)\""]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  worker:
+    build: ./backend
+    restart: unless-stopped
+    command: ["python", "-m", "app.worker"]
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      backend:
+        condition: service_healthy
+    environment:
+      APP_ENV: ${APP_ENV:-development}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-app_db}
+      # Prompt 2 multi-business targets: empty = co-located on DATABASE_URL.
+      # Set distinct URLs (after the data-migration runbook) to split physically.
+      PLATFORM_DATABASE_URL: ${PLATFORM_DATABASE_URL:-}
+      PRIME_DATABASE_URL: ${PRIME_DATABASE_URL:-}
+      NEST_DATABASE_URL: ${NEST_DATABASE_URL:-}
+      # Unified platform owner seed (demo default; production MUST override).
+      OWNER_SEED_EMAIL: ${OWNER_SEED_EMAIL:-owner@prime-nest-dashboard.com}
+      OWNER_SEED_PASSWORD: ${OWNER_SEED_PASSWORD:-OwnerDemo123!}
+      SEED_PLATFORM_OWNER: ${SEED_PLATFORM_OWNER:-true}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      SECRET_KEY: ${SECRET_KEY:-change-me-in-production}
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-}
+      AI_ENABLED: ${AI_ENABLED:-false}
+      AI_PROVIDER: ${AI_PROVIDER:-noop}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.0-flash}
+      WHATSAPP_ENABLED: ${WHATSAPP_ENABLED:-false}
+      WHATSAPP_ACCESS_TOKEN: ${WHATSAPP_ACCESS_TOKEN:-}
+      WHATSAPP_PHONE_NUMBER_ID: ${WHATSAPP_PHONE_NUMBER_ID:-}
+      WHATSAPP_PHONE_NUMBER_MAP: ${WHATSAPP_PHONE_NUMBER_MAP:-}
+      AUTOMATION_ENABLED: ${AUTOMATION_ENABLED:-true}
+      AUTOMATION_MAX_ATTEMPTS: ${AUTOMATION_MAX_ATTEMPTS:-5}
+      WORKER_ENABLED: ${WORKER_ENABLED:-true}
+      WORKER_INTERVAL_SECONDS: ${WORKER_INTERVAL_SECONDS:-15}
+      WORKER_BATCH_SIZE: ${WORKER_BATCH_SIZE:-50}
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"from app.core.database import ping_database; raise SystemExit(0 if ping_database() else 1)\""]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  scheduler:
+    build: ./backend
+    restart: unless-stopped
+    command: ["python", "-m", "app.scheduler"]
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      backend:
+        condition: service_healthy
+    environment:
+      APP_ENV: ${APP_ENV:-development}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-app_db}
+      # Prompt 2 multi-business targets: empty = co-located on DATABASE_URL.
+      # Set distinct URLs (after the data-migration runbook) to split physically.
+      PLATFORM_DATABASE_URL: ${PLATFORM_DATABASE_URL:-}
+      PRIME_DATABASE_URL: ${PRIME_DATABASE_URL:-}
+      NEST_DATABASE_URL: ${NEST_DATABASE_URL:-}
+      # Unified platform owner seed (demo default; production MUST override).
+      OWNER_SEED_EMAIL: ${OWNER_SEED_EMAIL:-owner@prime-nest-dashboard.com}
+      OWNER_SEED_PASSWORD: ${OWNER_SEED_PASSWORD:-OwnerDemo123!}
+      SEED_PLATFORM_OWNER: ${SEED_PLATFORM_OWNER:-true}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      SECRET_KEY: ${SECRET_KEY:-change-me-in-production}
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-}
+      AI_ENABLED: ${AI_ENABLED:-false}
+      AI_PROVIDER: ${AI_PROVIDER:-noop}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.0-flash}
+      WHATSAPP_ENABLED: ${WHATSAPP_ENABLED:-false}
+      WHATSAPP_ACCESS_TOKEN: ${WHATSAPP_ACCESS_TOKEN:-}
+      WHATSAPP_PHONE_NUMBER_ID: ${WHATSAPP_PHONE_NUMBER_ID:-}
+      WHATSAPP_PHONE_NUMBER_MAP: ${WHATSAPP_PHONE_NUMBER_MAP:-}
+      AUTOMATION_ENABLED: ${AUTOMATION_ENABLED:-true}
+      AUTOMATION_MAX_ATTEMPTS: ${AUTOMATION_MAX_ATTEMPTS:-5}
+      SCHEDULER_ENABLED: ${SCHEDULER_ENABLED:-true}
+      SCHEDULER_INTERVAL_SECONDS: ${SCHEDULER_INTERVAL_SECONDS:-60}
+      SCHEDULER_LEASE_SECONDS: ${SCHEDULER_LEASE_SECONDS:-120}
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"from app.core.database import ping_database; raise SystemExit(0 if ping_database() else 1)\""]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
 
 volumes:
   pgdata:
+  redisdata:

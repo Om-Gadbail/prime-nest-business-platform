@@ -30,6 +30,24 @@ def _forbidden(detail: str = "Forbidden.") -> HTTPException:
     return HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=detail)
 
 
+def _require_database_mapping(ctx: AuthenticatedContext) -> None:
+    """Enforce the trusted database mapping on every business-scoped request.
+
+    This is the choke point behind all 140 permission gates: any request
+    carrying a business context must resolve to a known database key, or it
+    fails closed (403). There is no fallback database. Business-less
+    contexts (e.g. /auth/me before a business is selected) skip this check.
+    """
+    if ctx.business is None:
+        return
+    from app.core import db_routing as routing
+
+    try:
+        routing.resolve_database_key(ctx.business)
+    except routing.DatabaseRoutingError as exc:
+        raise _forbidden("Business database mapping is not configured.") from exc
+
+
 def _extract_bearer_token(
     credentials: HTTPAuthorizationCredentials | None,
 ) -> str | None:
@@ -71,6 +89,7 @@ def get_current_business(
 ):  # type: ignore[no-untyped-def]
     if ctx.business is None:
         raise _forbidden("No active business context.")
+    _require_database_mapping(ctx)
     return ctx.business
 
 
@@ -79,6 +98,7 @@ def get_current_membership(
 ):  # type: ignore[no-untyped-def]
     if ctx.membership is None:
         raise _forbidden("No active business membership.")
+    _require_database_mapping(ctx)
     return ctx.membership
 
 
@@ -92,6 +112,7 @@ def require_permission(permission: str):  # type: ignore[no-untyped-def]
             raise _forbidden("No active business context.")
         if permission not in ctx.permissions:
             raise _forbidden(f"Missing permission: {permission}.")
+        _require_database_mapping(ctx)
         return ctx
 
     return _checker
@@ -102,6 +123,7 @@ def require_business_membership(
 ) -> AuthenticatedContext:
     if ctx.business is None or ctx.membership is None:
         raise _forbidden("No active business membership.")
+    _require_database_mapping(ctx)
     return ctx
 
 
