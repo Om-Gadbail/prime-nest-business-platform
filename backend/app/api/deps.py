@@ -127,13 +127,41 @@ def require_business_membership(
     return ctx
 
 
+def get_platform_db(
+    db: Session = Depends(get_db),
+):  # type: ignore[no-untyped-def]
+    """Explicit platform control-plane session (identity/RBAC/registry/audit).
+
+    In co-located mode this is the shared request session; after the physical
+    split it resolves to the ``platform_db`` engine for the request scope.
+    Prefer this over bare ``get_db`` when the operation is platform-scoped.
+    """
+    return db
+
+
+def get_business_db(
+    db: Session = Depends(get_db),
+    ctx: AuthenticatedContext = Depends(require_business_membership),
+):  # type: ignore[no-untyped-def]
+    """Explicit business-operational session for the verified context.
+
+    The session serves ``ctx``'s ``database_key`` (prime_db / nest_db) with
+    membership + mapping already verified. Prefer this over bare ``get_db``
+    in business-scoped routes. Session lifetime stays request-scoped and the
+    session is never shared across tasks.
+    """
+    return db, ctx
+
+
 __all__ = [
     "bearer_scheme",
+    "get_business_db",
     "get_current_business",
     "get_current_context",
     "get_current_membership",
     "get_current_user",
     "get_db",
+    "get_platform_db",
     "require_business_membership",
     "require_permission",
 ]
