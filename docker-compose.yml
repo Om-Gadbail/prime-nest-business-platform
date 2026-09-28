@@ -64,8 +64,8 @@ services:
       # Host Windows port is 6380 to avoid conflict with OSG Growth Redis.
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
 
-      BACKEND_CORS_ORIGINS: ${BACKEND_CORS_ORIGINS:-http://localhost:3000,http://localhost:5173,http://localhost:5174}
-      PUBLIC_SITE_ORIGINS: ${PUBLIC_SITE_ORIGINS:-http://localhost:5173,http://localhost:5174}
+      BACKEND_CORS_ORIGINS: ${BACKEND_CORS_ORIGINS:-http://localhost:3000,http://localhost:5173,http://localhost:5174,http://localhost:5175,http://localhost:5176,http://localhost:5177}
+      PUBLIC_SITE_ORIGINS: ${PUBLIC_SITE_ORIGINS:-http://localhost:5173,http://localhost:5174,http://localhost:5175,http://localhost:5176,http://localhost:5177}
 
       SECRET_KEY: ${SECRET_KEY:-change-me-in-production}
       JWT_SECRET_KEY: ${JWT_SECRET_KEY:-}

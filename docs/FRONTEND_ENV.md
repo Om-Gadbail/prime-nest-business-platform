@@ -6,11 +6,13 @@ See root `.env.example`. Block 3/4 adds no new backend variables; the
 dashboard origin must be listed in `PUBLIC_SITE_ORIGINS`:
 
 ```bash
-PUBLIC_SITE_ORIGINS=http://localhost:5173,http://localhost:5174
+PUBLIC_SITE_ORIGINS=http://localhost:5173,http://localhost:5174,http://localhost:5175,http://localhost:5176,http://localhost:5177
 ```
 
 Production dashboard domains replace the localhost entries (exact
-origins, never `*`).
+origins, never `*`). Port map: 5173 Prime website, 5174 Nest website,
+5175 Prime staff, 5176 Nest staff, 5177 Owner (reserved — see
+`docs/local-development-ports.md`).
 
 ## Prime website (`prime-fitness-website/.env`)
 
