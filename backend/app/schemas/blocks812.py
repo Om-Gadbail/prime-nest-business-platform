@@ -103,6 +103,18 @@ class PreferenceIn(BaseModel):
     opt_in: bool = True
 
 
+class HandoffIn(BaseModel):
+    """AI -> staff handoff (Prompt 7): verified summary only, no secrets."""
+
+    model_config = {"extra": "forbid"}
+
+    customer_name: str = Field(default="", max_length=200)
+    customer_phone: str = Field(default="", max_length=32)
+    conversation_id: UUID | None = None
+    summary_points: list[str] = Field(default_factory=list, max_length=10)
+    reason: str = Field(default="", max_length=500)
+
+
 # -- AI --------------------------------------------------------------------------
 
 

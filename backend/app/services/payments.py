@@ -268,8 +268,15 @@ def set_status(
     payment_id: object,
     to_status: str,
     actor_user_id: uuid.UUID | None = None,
+    settings=None,
 ):
-    """Explicit payment state machine (staff confirm money, never the UI)."""
+    """Explicit payment state machine (staff confirm money, never the UI).
+
+    Emits the deterministic payment event; with ``settings``, the growth
+    engine routes paid/failed through automation (confirmation/recovery).
+    Razorpay is NOT live (demo scope): only the deterministic state
+    machine feeds automation — never a provider claim.
+    """
     from app.services import domain_events as events
 
     payment = get_payment(db, business_id=business_id, payment_id=payment_id)
@@ -305,6 +312,24 @@ def set_status(
             payload={"from": current, "to": target, "amount": str(payment.amount)},
         )
     _sync_membership_payment_state(db, business_id=business_id, payment=payment)
+    if (
+        settings is not None
+        and target in ("paid", "failed")
+        and bool(getattr(settings, "automation_enabled", False))
+    ):
+        try:
+            from app.services import growth_engine as _growth
+
+            _growth.on_payment_event(
+                db,
+                settings,
+                business_id=business_id,
+                payment=payment,
+                status=target,
+                actor_user_id=actor_user_id,
+            )
+        except Exception:  # noqa: BLE001 - automation never breaks payments
+            pass
     return payment
 
 
@@ -426,7 +451,7 @@ def verify_webhook_signature(*, raw_body: bytes, signature: str, secret: str) ->
 
 
 def handle_webhook(
-    db: Session, *, business_id: uuid.UUID, provider: str, payload: dict
+    db: Session, *, business_id: uuid.UUID, provider: str, payload: dict, settings=None
 ) -> dict:
     """Provider callback entrypoint: authenticated, idempotent, audited.
 
@@ -476,11 +501,19 @@ def handle_webhook(
         }
     if status_raw == "paid":
         payment = set_status(
-            db, business_id=business_id, payment_id=payment.id, to_status="paid"
+            db,
+            business_id=business_id,
+            payment_id=payment.id,
+            to_status="paid",
+            settings=settings,
         )
     else:
         payment = set_status(
-            db, business_id=business_id, payment_id=payment.id, to_status="failed"
+            db,
+            business_id=business_id,
+            payment_id=payment.id,
+            to_status="failed",
+            settings=settings,
         )
     events.emit(
         db,

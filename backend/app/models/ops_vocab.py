@@ -113,8 +113,17 @@ AUDIT_ACTIONS = frozenset(
         "automation.rule_triggered",
         "automation.executed",
         "automation.failed",
+        # Prompt 7 growth-engine audit actions (append-only).
+        "automation.started",
+        "automation.completed",
+        "automation.skipped",
         "communication.sent",
+        "communication.skipped",
         "communication.failed",
+        "ai.generation_requested",
+        "ai.generation_succeeded",
+        "ai.generation_failed",
+        "handoff.created",
         "ai.conversation_started",
         "ai.tool_called",
         "ai.escalated",
@@ -248,6 +257,9 @@ APPROVAL_TRANSITIONS: dict[str, frozenset[str]] = {
 # Domain events emitted by operational services (future Block 8 automation
 # subscribes to these; services only emit, never consume).
 # Blocks 8-12 extend the catalogue (additive only — never rename/remove).
+# Prompt 7 (growth engine) additions are real states only: trials map to the
+# existing booking lifecycle (booking_type trial/visit), renewals to the
+# membership/renewal pipeline, payments to the payment state machine.
 DOMAIN_EVENTS = frozenset(
     {
         "lead.created",
@@ -258,7 +270,20 @@ DOMAIN_EVENTS = frozenset(
         "booking.confirmed",
         "booking.completed",
         "booking.cancelled",
+        "booking.no_show",
+        # Prompt 7: trial/visit lifecycle backed by the booking model
+        # (booking_type in {trial, visit/enquiry}; transitions via the
+        # booking state machine — no parallel trial state).
+        "trial.booked",
+        "trial.reminder_due",
+        "trial.attended",
+        "trial.no_show",
+        "visit.booked",
+        "visit.reminder_due",
+        "visit.attended",
+        "visit.no_show",
         "member.created",
+        "member.inactive",
         "membership.created",
         "membership.activated",
         "membership.expiring",
@@ -268,6 +293,7 @@ DOMAIN_EVENTS = frozenset(
         "payment.created",
         "payment.recorded",
         "payment.paid",
+        "payment.success",
         "payment.failed",
         "payment.overdue",
         "payment.refunded",
@@ -277,23 +303,60 @@ DOMAIN_EVENTS = frozenset(
         "seat.allocated",
         "seat.released",
         "seat.transferred",
+        "seat.continuity_due",
         "renewal.created",
         "renewal.confirmed",
         "referral.created",
         "review.requested",
+        "review.received",
+        "review.reply_required",
         "customer.inactive",
         "task.created",
         "task.overdue",
         "approval.requested",
         "approval.decided",
+        # Prompt 7: automation lifecycle (emitted by the growth engine;
+        # observable in audit + owner automation-health).
+        "automation.started",
+        "automation.completed",
+        "automation.failed",
+        # Prompt 7: scheduled/due markers the worker drains (durable delayed
+        # executions already persist as pending automation_executions rows).
+        "scheduled.followup",
     }
 )
 
 # --- Blocks 8-12 vocabularies (automation / comms / AI / growth) ---
 
 AUTOMATION_STATUSES = frozenset(
-    {"pending", "running", "succeeded", "failed", "retrying", "cancelled"}
+    {
+        # Block 8 engine statuses (kept for backwards compatibility;
+        # "succeeded" == "completed", "pending" == "queued").
+        "pending",
+        "running",
+        "succeeded",
+        "failed",
+        "retrying",
+        "cancelled",
+        # Prompt 7 growth-engine canonical statuses (deterministic,
+        # owner-readable; new executions use these).
+        "queued",
+        "completed",
+        "skipped",
+    }
 )
+
+# Terminal statuses: no further attempts (success-equivalents + skips +
+# cancels + failures-at-budget).
+AUTOMATION_TERMINAL_STATUSES = frozenset(
+    {"succeeded", "completed", "failed", "skipped", "cancelled"}
+)
+
+# Success-equivalent statuses (count as successful in health reports).
+AUTOMATION_SUCCESS_STATUSES = frozenset({"succeeded", "completed"})
+
+# Pending-equivalent statuses (worker-drainable).
+AUTOMATION_PENDING_STATUSES = frozenset({"pending", "queued", "retrying", "running"})
 
 AUTOMATION_ACTION_TYPES = frozenset(
     {

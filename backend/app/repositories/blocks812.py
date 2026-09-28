@@ -211,6 +211,32 @@ def get_message_by_provider(
     return db.execute(stmt).scalars().first()
 
 
+def get_message_by_automation(
+    db: Session, *, business_id: uuid.UUID, automation_id: object | None
+):
+    """Find the outbound message already produced for one execution.
+
+    Retry-safety: an execution sends at most once — a retry that finds its
+    message returns it instead of calling the provider again (the provider
+    may have accepted the first attempt even when the response was lost).
+    """
+    if automation_id in (None, ""):
+        return None
+    try:
+        import uuid as _uuid
+
+        aid = (
+            automation_id
+            if isinstance(automation_id, _uuid.UUID)
+            else _uuid.UUID(str(automation_id))
+        )
+    except (ValueError, AttributeError, TypeError):
+        return None
+    stmt = apply_business_scope(select(Message), Message, business_id)
+    stmt = stmt.where(Message.automation_id == aid)
+    return db.execute(stmt).scalars().first()
+
+
 def list_messages(
     db: Session,
     *,

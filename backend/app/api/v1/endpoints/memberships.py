@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.api import deps
 from app.api.v1.endpoints._helpers import map_service_error, record_audit, request_id
+from app.core.config import get_settings
 from app.schemas.common import Page, list_params
 from app.schemas.operations import (
     MembershipCreate,
@@ -322,6 +323,7 @@ def renew_membership(
             membership_id=membership_id,
             data=payload.model_dump(exclude_unset=True, mode="json"),
             actor_user_id=ctx.user.id,
+            settings=get_settings(),
         )
         db.commit()
         db.refresh(renewed)

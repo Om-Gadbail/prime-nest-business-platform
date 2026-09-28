@@ -133,6 +133,20 @@ def list_executions(
                 "idempotency_key": e.idempotency_key,
                 "correlation_id": e.correlation_id,
                 "error": e.error,
+                # Prompt 7 communication-center visibility (additive):
+                # execution outcome, provider/message reference, timing.
+                "output": dict(e.output_payload or {}),
+                "provider": str((e.output_payload or {}).get("provider", "")),
+                "provider_message_id": str(
+                    (e.output_payload or {}).get("provider_message_id", "") or ""
+                ),
+                "provider_mode": str(
+                    (e.output_payload or {}).get("provider_mode", "") or ""
+                ),
+                "started_at": e.started_at.isoformat() if e.started_at else None,
+                "completed_at": (
+                    e.completed_at.isoformat() if e.completed_at else None
+                ),
             }
             for e in items
         ],

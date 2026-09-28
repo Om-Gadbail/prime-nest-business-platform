@@ -96,8 +96,15 @@ def create_lead(
     contact_id: uuid.UUID | None = None,
     assigned_user_id: uuid.UUID | None = None,
     routing: dict | None = None,
+    settings=None,
 ) -> object:
-    """Staff lead creation (contact resolved or created inline)."""
+    """Staff lead creation (contact resolved or created inline).
+
+    Emits ``lead.created`` (fast domain-event row, part of the caller's
+    transaction). When ``settings`` is provided, the growth engine also
+    routes the event through automation (staff path: synchronous run).
+    Callers that pass no settings get event-log-only behavior.
+    """
     from app.services import lead_routing as routing_service
 
     fields = _lead_fields_from_input(data)
@@ -161,6 +168,23 @@ def create_lead(
             db, business_id=business_id, lead_id=lead.id, lead_name=lead.display_name
         )
     db.flush()
+    _emit_lead_created(
+        db, business_id=business_id, lead=lead, actor_user_id=actor_user_id
+    )
+    if settings is not None and bool(getattr(settings, "automation_enabled", False)):
+        try:
+            from app.services import growth_engine as _growth
+
+            _growth.on_lead_created(
+                db,
+                settings,
+                business_id=business_id,
+                lead=lead,
+                actor_user_id=actor_user_id,
+                fast=False,
+            )
+        except Exception:  # noqa: BLE001 - automation never breaks lead capture
+            pass
     return lead
 
 
@@ -170,8 +194,14 @@ def intake_lead(
     business_id: uuid.UUID,
     data: dict,
     routing: dict | None = None,
+    settings=None,
 ) -> object:
-    """Anonymous website intake: always NEW, contact resolved, staff notified."""
+    """Anonymous website intake: always NEW, contact resolved, staff notified.
+
+    Emits ``lead.created``. When ``settings`` is provided (public endpoint),
+    the growth engine ENQUEUES automation (fast: no provider/AI work inline —
+    the worker executes). Website submission stays fast.
+    """
     from app.services import lead_routing as routing_service
 
     fields = _lead_fields_from_input(data)
@@ -213,7 +243,52 @@ def intake_lead(
         db, business_id=business_id, lead_id=lead.id, lead_name=lead.display_name
     )
     db.flush()
+    _emit_lead_created(db, business_id=business_id, lead=lead, actor_user_id=None)
+    if settings is not None and bool(getattr(settings, "automation_enabled", False)):
+        try:
+            from app.services import growth_engine as _growth
+
+            _growth.on_lead_created(
+                db,
+                settings,
+                business_id=business_id,
+                lead=lead,
+                actor_user_id=None,
+                fast=True,
+            )
+        except Exception:  # noqa: BLE001 - automation never breaks intake
+            pass
     return lead
+
+
+def _emit_lead_created(
+    db: Session, *, business_id: uuid.UUID, lead, actor_user_id
+) -> None:
+    """Fast domain-event row for a new lead (caller's transaction, never raises)."""
+    try:
+        from app.services import domain_events as _events
+
+        _events.emit(
+            db,
+            business_id=business_id,
+            event_type="lead.created",
+            entity_type="lead",
+            entity_id=getattr(lead, "id", None),
+            actor_user_id=actor_user_id,
+            payload={
+                "lead_id": str(getattr(lead, "id", "")),
+                "source": str(getattr(lead, "source", "") or ""),
+                "display_name": str(getattr(lead, "display_name", "") or ""),
+                "phone": str(
+                    getattr(lead, "phone", "")
+                    or getattr(lead, "normalized_phone", "")
+                    or ""
+                ),
+            },
+        )
+        db.flush()
+    except Exception:  # noqa: BLE001 - event log never breaks lead capture
+        pass
 
 
 def get_lead(db: Session, *, business_id: uuid.UUID, lead_id: object):
@@ -417,6 +492,22 @@ def set_status(
         actor_user_id=actor_user_id,
     )
     db.flush()
+    if target == "contacted":
+        try:
+            from app.services import domain_events as _events
+
+            _events.emit(
+                db,
+                business_id=business_id,
+                event_type="lead.contacted",
+                entity_type="lead",
+                entity_id=lead.id,
+                actor_user_id=actor_user_id,
+                payload={"from": previous, "to": target},
+            )
+            db.flush()
+        except Exception:  # noqa: BLE001 - event log never breaks transitions
+            pass
     return lead
 
 

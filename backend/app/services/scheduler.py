@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -117,6 +117,8 @@ def run_business_sweep(
         return summary
     try:
         # 1. Bounded replay of retrying / due-pending executions (per-business).
+        #    Prompt 7: genuine execution (Gemini -> provider -> outcome),
+        #    not a fake replay — see automation.retry_due.
         try:
             summary["retried"] = int(
                 auto_service.retry_due(
@@ -130,7 +132,20 @@ def run_business_sweep(
             logger.warning(
                 "sweep retry_due failed business=%s err=%s", business_id, exc
             )
-        # 2. Renewal reminders at configured offsets → automation events (idempotent).
+        # 1b. Event backlog drain: enqueue automation for growth events that
+        #     have no executions yet (fast website path completion).
+        try:
+            from app.services import growth_engine as growth_service
+
+            summary["drained"] = int(
+                growth_service.drain_event_backlog(
+                    db, settings, business_id=business_id, limit=20
+                )
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("sweep drain failed business=%s err=%s", business_id, exc)
+            summary["drained"] = 0
+        # 2. Renewal reminders at configured offsets -> automation events (idempotent).
         try:
             from app.services import memberships as membership_service
 
@@ -147,19 +162,24 @@ def run_business_sweep(
             sent = 0
             for item in due:
                 try:
-                    auto_service.dispatch_event(
+                    from app.repositories import op_memberships as membership_repo
+
+                    membership = membership_repo.get_membership(
+                        db,
+                        membership_id=uuid.UUID(str(item["membership_id"])),
+                        business_id=business_id,
+                    )
+                    if membership is None:
+                        continue
+                    # Eligibility-gated (active? renewed? opted in? dup?).
+                    executions = growth_service.on_membership_expiring(
                         db,
                         settings,
                         business_id=business_id,
-                        event_type="membership.expiring",
-                        entity_type="membership",
-                        entity_id=uuid.UUID(str(item["membership_id"])),
-                        payload={
-                            "offset_days": item["offset_days"],
-                            "end_date": item["end_date"],
-                        },
+                        membership=membership,
+                        offset_days=int(item["offset_days"]),
                     )
-                    sent += 1
+                    sent += len(executions)
                 except Exception:  # noqa: BLE001 - per-item safety
                     continue
             summary["renewal_messages"] = sent
@@ -167,6 +187,45 @@ def run_business_sweep(
             logger.warning(
                 "sweep renewal_scan failed business=%s err=%s", business_id, exc
             )
+        # 2b. Post-expiry follow-up: memberships that expired in the last
+        #     48h get one win-back automation (idempotent, opt-in gated).
+        try:
+            summary["expiry_followups"] = int(
+                _sweep_expiry_followups(db, settings, business_id=business_id)
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "sweep expiry followup failed business=%s err=%s", business_id, exc
+            )
+            summary["expiry_followups"] = 0
+        # 2c. Trial/visit reminders due within the horizon.
+        try:
+            summary["reminders"] = int(
+                _sweep_booking_reminders(db, settings, business_id=business_id)
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "sweep reminders failed business=%s err=%s", business_id, exc
+            )
+            summary["reminders"] = 0
+        # 2d. Inactive-member retention (deterministic signal only).
+        try:
+            summary["inactive"] = int(
+                _sweep_inactive_members(db, settings, business_id=business_id)
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("sweep inactive failed business=%s err=%s", business_id, exc)
+            summary["inactive"] = 0
+        # 2e. Seat continuity reminders (seat businesses with real allocations).
+        try:
+            summary["seat_continuity"] = int(
+                _sweep_seat_continuity(db, settings, business_id=business_id)
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "sweep seat continuity failed business=%s err=%s", business_id, exc
+            )
+            summary["seat_continuity"] = 0
         # 3. Daily owner brief (upserted into daily_reports; idempotent per date).
         try:
             reports_service.build_daily_report(db, business_id=business_id)
@@ -195,6 +254,224 @@ def run_business_sweep(
         summary["latency_ms"],
     )
     return summary
+
+
+# -- Prompt 7 growth sweep stages (each bounded + isolated; failures logged) --
+
+
+def _sweep_expiry_followups(
+    db: Session, settings: Settings, *, business_id: uuid.UUID
+) -> int:
+    """Win-back automation for memberships expired in the last 48h."""
+    from datetime import date as _date
+
+    from sqlalchemy import select as _select
+    from app.models.operations import Membership
+    from app.services import growth_engine as growth_service
+
+    today = _date.today()
+    rows = list(
+        db.execute(
+            _select(Membership)
+            .where(
+                Membership.business_id == business_id,
+                Membership.status == "expired",
+                Membership.end_date >= today - timedelta(days=2),
+                Membership.end_date <= today,
+            )
+            .limit(25)
+        )
+        .scalars()
+        .all()
+    )
+    sent = 0
+    for membership in rows:
+        try:
+            sent += len(
+                growth_service.on_membership_expired(
+                    db, settings, business_id=business_id, membership=membership
+                )
+            )
+        except Exception:  # noqa: BLE001 - per-item safety
+            continue
+    return sent
+
+
+def _sweep_booking_reminders(
+    db: Session, settings: Settings, *, business_id: uuid.UUID
+) -> int:
+    """Confirmation/reminder automation for bookings due within the horizon."""
+    from app.services import automation as auto_service
+    from app.services import growth_engine as growth_service
+
+    due = growth_service.detect_reminder_due_bookings(
+        db, business_id=business_id, limit=20
+    )
+    sent = 0
+    for item in due:
+        try:
+            booking = item["booking"]
+            # Sweep-to-sweep idempotency: a reminder event already carrying
+            # executions (queued or completed) is never re-emitted — the
+            # worker drains/executed it exactly once.
+            existing = growth_service._event_for_entity(
+                db,
+                business_id=business_id,
+                event_type=item["event_type"],
+                entity_id=getattr(booking, "id", None),
+            )
+            if existing is not None and growth_service.event_has_executions(
+                db, business_id=business_id, event=existing
+            ):
+                continue
+            event = auto_service.events.emit(
+                db,
+                business_id=business_id,
+                event_type=item["event_type"],
+                entity_type="booking",
+                entity_id=getattr(booking, "id", None),
+                payload=item["payload"],
+            )
+            db.flush()
+            sent += len(
+                auto_service.run_rules_for_event(
+                    db,
+                    settings,
+                    business_id=business_id,
+                    event=event,
+                    event_type=item["event_type"],
+                )
+            )
+        except Exception:  # noqa: BLE001 - per-item safety
+            continue
+    return sent
+
+
+def _sweep_inactive_members(
+    db: Session, settings: Settings, *, business_id: uuid.UUID
+) -> int:
+    """Retention automation for deterministically inactive members."""
+    from app.services import automation as auto_service
+    from app.services import growth_engine as growth_service
+
+    found = growth_service.detect_inactive_members(
+        db, business_id=business_id, limit=20
+    )
+    sent = 0
+    for item in found:
+        for event_type in ("customer.inactive",):
+            try:
+                existing = growth_service._event_for_entity(
+                    db,
+                    business_id=business_id,
+                    event_type=event_type,
+                    entity_id=item["member_id"],
+                )
+                if existing is not None:
+                    # One retention automation per member per sweep cycle:
+                    # skip when executions already exist for the event.
+                    if growth_service.event_has_executions(
+                        db, business_id=business_id, event=existing
+                    ):
+                        continue
+                    event = existing
+                else:
+                    event = auto_service.events.emit(
+                        db,
+                        business_id=business_id,
+                        event_type=event_type,
+                        entity_type="member",
+                        entity_id=uuid.UUID(item["member_id"]),
+                        payload={
+                            "member_id": item["member_id"],
+                            "display_name": item["display_name"],
+                            "name": item["display_name"],
+                            "phone": item["phone"],
+                            "normalized_phone": item["phone"],
+                        },
+                    )
+                    db.flush()
+                sent += len(
+                    auto_service.run_rules_for_event(
+                        db,
+                        settings,
+                        business_id=business_id,
+                        event=event,
+                        event_type=event_type,
+                    )
+                )
+            except Exception:  # noqa: BLE001 - per-item safety
+                continue
+    return sent
+
+
+def _sweep_seat_continuity(
+    db: Session, settings: Settings, *, business_id: uuid.UUID
+) -> int:
+    """Seat continuity reminders (only for seat-capable businesses with data)."""
+    from app.services import automation as auto_service
+    from app.services import growth_engine as growth_service
+
+    try:
+        from app.services import capabilities as caps_service
+        from app.repositories import businesses as business_repo
+
+        business = business_repo.get_by_id(db, business_id)
+        if business is not None and not caps_service.is_enabled(
+            db,
+            business_id=business_id,
+            business_type=str(getattr(business, "business_type", "other")),
+            capability="seat_management",
+        ):
+            return 0
+    except Exception:  # noqa: BLE001 - capability check never blocks other stages
+        pass
+    due = growth_service.detect_seat_continuity_due(
+        db, business_id=business_id, limit=20
+    )
+    sent = 0
+    for item in due:
+        try:
+            existing = growth_service._event_for_entity(
+                db,
+                business_id=business_id,
+                event_type="seat.continuity_due",
+                entity_id=item["allocation_id"],
+            )
+            if existing is not None and growth_service.event_has_executions(
+                db, business_id=business_id, event=existing
+            ):
+                continue
+            event = auto_service.events.emit(
+                db,
+                business_id=business_id,
+                event_type="seat.continuity_due",
+                entity_type="seat_allocation",
+                entity_id=uuid.UUID(item["allocation_id"]),
+                payload={
+                    "allocation_id": item["allocation_id"],
+                    "membership_id": item["membership_id"],
+                    "display_name": item["display_name"],
+                    "name": item["display_name"],
+                    "phone": item["phone"],
+                    "normalized_phone": item["phone"],
+                    "expiry": item["end_date"],
+                    "end_date": item["end_date"],
+                },
+            )
+            db.flush()
+            sent += len(
+                auto_service.run_rules_for_event(
+                    db,
+                    settings,
+                    business_id=business_id,
+                    event=event,
+                    event_type="seat.continuity_due",
+                )
+            )
+        except Exception:  # noqa: BLE001 - per-item safety
+            continue
+    return sent
 
 
 def run_all_businesses(db: Session, settings: Settings) -> list[dict]:

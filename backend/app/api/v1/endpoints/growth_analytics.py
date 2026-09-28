@@ -302,6 +302,30 @@ def owner_brief(
     assert ctx.business is not None
     try:
         report = reports_service.build_daily_report(db, business_id=ctx.business.id)
+        # Prompt 7: optional Gemini narrative enhancement. The deterministic
+        # numbers above stay authoritative; when Gemini is unavailable the
+        # brief works unchanged (no ai_summary key claims).
+        try:
+            from app.core.config import get_settings as _get_settings
+            from app.services import growth_engine as _growth
+
+            facts = {
+                "business": str(getattr(ctx.business, "name", "") or ""),
+                "yesterday": dict(report.get("yesterday", {}) or {}),
+                "today": dict(report.get("today", {}) or {}),
+                "trend": dict(report.get("trend", {}) or {}),
+                "recommended_actions": list(
+                    report.get("recommended_actions", []) or []
+                )[:5],
+            }
+            enhancement = _growth.enhance_brief_with_gemini(
+                _get_settings(), business_id=ctx.business.id, facts=facts
+            )
+            if enhancement.get("ai_summary"):
+                report["ai_summary"] = enhancement["ai_summary"]
+            report["ai_available"] = bool(enhancement.get("ai_available", False))
+        except Exception:  # noqa: BLE001 - enhancement never breaks the brief
+            pass
         db.commit()
     except Exception as exc:
         db.rollback()

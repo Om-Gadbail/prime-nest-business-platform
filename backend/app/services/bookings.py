@@ -97,7 +97,14 @@ def create_booking(
     lead_id: uuid.UUID | None = None,
     assigned_user_id: uuid.UUID | None = None,
     status: str = "requested",
+    settings=None,
 ) -> object:
+    """Staff booking creation.
+
+    Emits ``booking.created`` (+ ``trial.booked``/``visit.booked`` for
+    trial/visit types). With ``settings``, the growth engine routes the
+    event through automation synchronously (staff path).
+    """
     fields = _booking_fields(data)
     status_clean = _validate_enum(
         status, allowed=BOOKING_STATUSES, field="status", default="requested"
@@ -168,11 +175,80 @@ def create_booking(
             title=booking.title or "new request",
         )
     db.flush()
+    _emit_booking_events(
+        db, business_id=business_id, booking=booking, actor_user_id=actor_user_id
+    )
+    if settings is not None and bool(getattr(settings, "automation_enabled", False)):
+        try:
+            from app.services import growth_engine as _growth
+
+            _growth.on_booking_intake(
+                db,
+                settings,
+                business_id=business_id,
+                booking=booking,
+                actor_user_id=actor_user_id,
+                fast=False,
+            )
+        except Exception:  # noqa: BLE001 - automation never breaks booking
+            pass
     return booking
 
 
-def intake_booking(db: Session, *, business_id: uuid.UUID, data: dict) -> object:
-    """Anonymous booking request: contact resolved, status forced REQUESTED."""
+def _emit_booking_events(
+    db: Session, *, business_id: uuid.UUID, booking, actor_user_id
+) -> None:
+    """Fast domain-event rows for a booking intake (never raises)."""
+    try:
+        from app.services import domain_events as _events
+
+        booking_type = str(getattr(booking, "booking_type", "") or "").lower()
+        _events.emit(
+            db,
+            business_id=business_id,
+            event_type="booking.created",
+            entity_type="booking",
+            entity_id=getattr(booking, "id", None),
+            actor_user_id=actor_user_id,
+            payload={
+                "booking_id": str(getattr(booking, "id", "")),
+                "booking_type": booking_type,
+                "status": str(getattr(booking, "status", "") or ""),
+            },
+        )
+        if booking_type == "trial":
+            _events.emit(
+                db,
+                business_id=business_id,
+                event_type="trial.booked",
+                entity_type="booking",
+                entity_id=getattr(booking, "id", None),
+                actor_user_id=actor_user_id,
+                payload={"booking_id": str(getattr(booking, "id", ""))},
+            )
+        elif booking_type in ("visit", "tour", "demo"):
+            _events.emit(
+                db,
+                business_id=business_id,
+                event_type="visit.booked",
+                entity_type="booking",
+                entity_id=getattr(booking, "id", None),
+                actor_user_id=actor_user_id,
+                payload={"booking_id": str(getattr(booking, "id", ""))},
+            )
+        db.flush()
+    except Exception:  # noqa: BLE001 - event log never breaks booking
+        pass
+
+
+def intake_booking(
+    db: Session, *, business_id: uuid.UUID, data: dict, settings=None
+) -> object:
+    """Anonymous booking request: contact resolved, status forced REQUESTED.
+
+    Emits intake events; with ``settings`` the growth engine ENQUEUES
+    automation (fast website path — worker executes Gemini/provider work).
+    """
     name = _clean_text(data.get("display_name") or data.get("name"), max_chars=200)
     if not name:
         raise ValueError("Name is required.")
@@ -217,6 +293,20 @@ def intake_booking(db: Session, *, business_id: uuid.UUID, data: dict) -> object
         lead_id=lead_id,
         status="requested",
     )
+    if settings is not None and bool(getattr(settings, "automation_enabled", False)):
+        try:
+            from app.services import growth_engine as _growth
+
+            _growth.on_booking_intake(
+                db,
+                settings,
+                business_id=business_id,
+                booking=booking,
+                actor_user_id=None,
+                fast=True,
+            )
+        except Exception:  # noqa: BLE001 - automation never breaks intake
+            pass
     return booking
 
 
@@ -337,7 +427,14 @@ def transition(
     to_status: str,
     actor_user_id: uuid.UUID | None = None,
     cancellation_reason: str = "",
+    settings=None,
 ) -> object:
+    """Staff booking transition + lifecycle events (confirmation/outcome).
+
+    Emits ``booking.confirmed`` / ``booking.completed`` /
+    ``booking.cancelled``. With ``settings``, routes synchronously through
+    automation (staff path: confirmation message sent immediately).
+    """
     booking = get_booking(db, business_id=business_id, booking_id=booking_id)
     target = _validate_enum(
         to_status, allowed=BOOKING_STATUSES, field="status", default="requested"
@@ -356,4 +453,103 @@ def transition(
     if target == "cancelled":
         booking.cancellation_reason = _clean_text(cancellation_reason, max_chars=500)
     db.flush()
+    _emit_transition_event(
+        db,
+        business_id=business_id,
+        booking=booking,
+        from_status=current,
+        to_status=target,
+        actor_user_id=actor_user_id,
+    )
+    if settings is not None and bool(getattr(settings, "automation_enabled", False)):
+        try:
+            from app.services import automation as _auto
+            from app.services import growth_engine as _growth
+
+            payload = _growth._booking_payload(
+                db, business_id=business_id, booking=booking
+            )
+            event_map = {
+                "confirmed": "booking.confirmed",
+                "completed": "booking.completed",
+                "cancelled": "booking.cancelled",
+                "no_show": "booking.no_show",
+            }
+            if target in event_map:
+                _auto.dispatch_event(
+                    db,
+                    settings,
+                    business_id=business_id,
+                    event_type=event_map[target],
+                    entity_type="booking",
+                    entity_id=booking.id,
+                    actor_user_id=actor_user_id,
+                    payload=payload,
+                )
+            # Trial/visit outcome automation for trial-type bookings
+            # (reschedule follow-up on no-show; observable attended event).
+            booking_type = str(getattr(booking, "booking_type", "") or "").lower()
+            if booking_type in ("trial", "visit", "tour", "demo") and target in (
+                "completed",
+                "no_show",
+            ):
+                outcome_event = (
+                    "trial.attended"
+                    if (booking_type == "trial" and target == "completed")
+                    else "trial.no_show"
+                    if (booking_type == "trial")
+                    else "visit.attended"
+                    if target == "completed"
+                    else "visit.no_show"
+                )
+                _growth._dispatch(
+                    db,
+                    settings,
+                    business_id=business_id,
+                    event_type=outcome_event,
+                    entity_type="booking",
+                    entity_id=booking.id,
+                    payload=payload,
+                    actor_user_id=actor_user_id,
+                    fast=False,
+                )
+        except Exception:  # noqa: BLE001 - automation never breaks transition
+            pass
     return booking
+
+
+def _emit_transition_event(
+    db: Session,
+    *,
+    business_id: uuid.UUID,
+    booking,
+    from_status: str,
+    to_status: str,
+    actor_user_id,
+) -> None:
+    try:
+        from app.services import domain_events as _events
+
+        event_map = {
+            "confirmed": "booking.confirmed",
+            "completed": "booking.completed",
+            "cancelled": "booking.cancelled",
+            "no_show": "booking.no_show",
+        }
+        if to_status in event_map:
+            _events.emit(
+                db,
+                business_id=business_id,
+                event_type=event_map[to_status],
+                entity_type="booking",
+                entity_id=getattr(booking, "id", None),
+                actor_user_id=actor_user_id,
+                payload={
+                    "from": from_status,
+                    "to": to_status,
+                    "booking_type": str(getattr(booking, "booking_type", "") or ""),
+                },
+            )
+            db.flush()
+    except Exception:  # noqa: BLE001 - event log never breaks transition
+        pass

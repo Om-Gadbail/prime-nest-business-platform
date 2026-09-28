@@ -153,6 +153,7 @@ def submit_lead(
             business_id=business.id,
             data={**data, "display_name": data.get("name", ""), "message": message},
             routing={"routed_by": "slug", "reason": route_reason},
+            settings=get_settings(),
         )
         db.flush()
         response = PublicLeadOut(lead_id=str(lead.id))
@@ -224,6 +225,7 @@ def submit_booking(
             db,
             business_id=business.id,
             data={**data, "display_name": data.get("name", ""), "message": message},
+            settings=get_settings(),
         )
         db.flush()
         # Honest language: intake creates REQUESTED, never a confirmation.

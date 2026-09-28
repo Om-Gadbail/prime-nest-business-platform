@@ -163,7 +163,9 @@ def test_gemini_shared_credential_config(monkeypatch):
 
     cfg = iconf.resolve_gemini_config(_settings())
     assert cfg.configured is True
-    assert cfg.model == "gemini-2.5-flash"  # current stable, not shut-down 2.0
+    assert (
+        cfg.model == "gemini-3.6-flash"
+    )  # live-verified default (2.5-flash 404s for new keys)
     assert cfg.mode == "LIVE"
     summary = cfg.safe_summary()
     assert "demo-key" not in json.dumps(summary)
@@ -180,11 +182,11 @@ def test_gemini_defaults_to_not_configured(monkeypatch):
 
 
 def test_gemini_model_is_configurable(monkeypatch):
-    _apply_env(monkeypatch, {"GEMINI_API_KEY": "k", "GEMINI_MODEL": "gemini-2.5-flash"})
+    _apply_env(monkeypatch, {"GEMINI_API_KEY": "k", "GEMINI_MODEL": "gemini-3.6-flash"})
     from app.services.ai_gateway import GeminiChatProvider
 
     provider = GeminiChatProvider(_settings())
-    assert provider.model == "gemini-2.5-flash"
+    assert provider.model == "gemini-3.6-flash"
 
 
 # TEST 1 + TEST 2: business -> own configuration ---------------------------------
@@ -300,7 +302,7 @@ def test_gemini_provider_success_is_normalized(monkeypatch):
     )
     assert result.text == "Hello from Gemini"
     assert result.tool_calls == [{"name": "get_hours", "args": {"day": "mon"}}]
-    assert result.model == "gemini-2.5-flash"
+    assert result.model == "gemini-3.6-flash"
 
 
 def test_gemini_provider_failure_is_normalized(monkeypatch):
@@ -793,4 +795,4 @@ def test_env_example_has_no_real_secrets():
         )
         value = line.split("=", 1)[1].strip()
         assert value == "", f"{var} must be empty in .env.example, got {value!r}"
-    assert "GEMINI_MODEL=gemini-2.5-flash" in text
+    assert "GEMINI_MODEL=gemini-3.6-flash" in text

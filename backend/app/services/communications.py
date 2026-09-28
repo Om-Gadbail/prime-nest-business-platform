@@ -262,6 +262,38 @@ DEFAULT_TEMPLATES: dict[str, dict] = {
         "body": "Hi {{name}}, thanks for visiting {{business}}! Would you share your honest feedback here: {{link}}",
         "variables": ["name", "business", "link"],
     },
+    # -- Prompt 7 growth + retention templates (generic; business name and
+    # -- verified facts are injected per business — never hardcoded) --
+    "trial_noshow": {
+        "channel": "whatsapp",
+        "name": "Missed trial/visit follow-up",
+        "body": "Hi {{name}}, we missed you at {{business}} for your visit ({{slot}}). Reply RESCHEDULE and we will find a new time.",
+        "variables": ["name", "business", "slot"],
+    },
+    "retention_winback": {
+        "channel": "whatsapp",
+        "name": "Inactive member win-back",
+        "body": "Hi {{name}}, we have not seen you at {{business}} for a while. Reply VISIT and our team will help you restart.",
+        "variables": ["name", "business"],
+    },
+    "payment_confirm": {
+        "channel": "whatsapp",
+        "name": "Payment confirmation",
+        "body": "Hi {{name}}, we received your payment of {{amount}} {{currency}} at {{business}}. Thank you!",
+        "variables": ["name", "amount", "currency", "business"],
+    },
+    "payment_recovery": {
+        "channel": "whatsapp",
+        "name": "Failed payment recovery",
+        "body": "Hi {{name}}, your payment of {{amount}} {{currency}} at {{business}} did not go through. Reply RETRY and we will help.",
+        "variables": ["name", "amount", "currency", "business"],
+    },
+    "seat_continuity": {
+        "channel": "whatsapp",
+        "name": "Seat continuity reminder",
+        "body": "Hi {{name}}, your seat at {{business}} is linked to a membership expiring on {{expiry}}. Renew to keep your seat.",
+        "variables": ["name", "business", "expiry"],
+    },
 }
 
 

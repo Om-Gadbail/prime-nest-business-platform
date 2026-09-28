@@ -1798,6 +1798,64 @@
         }
       }
     },
+    "/api/v1/bookings/{booking_id}/trial-outcome": {
+      "post": {
+        "tags": [
+          "bookings"
+        ],
+        "summary": "Record trial/visit outcome (attended/no-show + automation)",
+        "description": "Staff-recorded trial/visit outcome (Prompt 7 growth engine).\n\nBacked by the real booking state machine (completed / no_show); only\ntrial/visit-type bookings qualify. Fires the outcome automation\n(no-show reschedule follow-up) synchronously in the staff context.",
+        "operationId": "trial_outcome_api_v1_bookings__booking_id__trial_outcome_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "booking_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Booking Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TrialOutcomeIn"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BookingOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/contacts": {
       "get": {
         "tags": [
@@ -3775,6 +3833,137 @@
         }
       }
     },
+    "/api/v1/domain-events": {
+      "get": {
+        "tags": [
+          "domain-events"
+        ],
+        "summary": "List domain events",
+        "operationId": "list_domain_events_api_v1_domain_events_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "event_type",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 64
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Event Type"
+            }
+          },
+          {
+            "name": "entity_type",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 48
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Entity Type"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 1000000,
+              "minimum": 1,
+              "default": 50,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 1000000,
+              "minimum": 0,
+              "default": 0,
+              "title": "Offset"
+            }
+          },
+          {
+            "name": "sort",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 64
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Sort"
+            }
+          },
+          {
+            "name": "direction",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 8
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": "desc",
+              "title": "Direction"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_DomainEventOut_"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/dashboard/overview": {
       "get": {
         "tags": [
@@ -4625,6 +4814,68 @@
                   "type": "object",
                   "additionalProperties": true,
                   "title": "Response Member Profile Api V1 Members  Member Id  Profile Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/members/{member_id}/timeline": {
+      "get": {
+        "tags": [
+          "members"
+        ],
+        "summary": "Unified member timeline (360 view)",
+        "description": "Chronological member story: audit + domain events + lead activity.\n\nJoins the three existing trails (no duplicate audit system) and sorts\nby timestamp descending. All rows are pre-scoped to the caller's\nbusiness; cross-tenant member IDs return 404.",
+        "operationId": "member_timeline_api_v1_members__member_id__timeline_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "member_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Member Id"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 200,
+              "minimum": 1,
+              "default": 50,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Member Timeline Api V1 Members  Member Id  Timeline Get"
                 }
               }
             }
@@ -5595,6 +5846,63 @@
         }
       }
     },
+    "/api/v1/renewals/{renewal_id}/status": {
+      "post": {
+        "tags": [
+          "memberships"
+        ],
+        "summary": "Transition renewal (pending -> confirmed/cancelled/expired)",
+        "operationId": "change_renewal_status_api_v1_renewals__renewal_id__status_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "renewal_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Renewal Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RenewalStatusIn"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RenewalOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/payments": {
       "get": {
         "tags": [
@@ -5982,6 +6290,50 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/PaymentOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/payments/webhook": {
+      "post": {
+        "tags": [
+          "payments"
+        ],
+        "summary": "Provider payment callback (HMAC-verified)",
+        "description": "Provider-neutral webhook: HMAC-verified, idempotent, tenant-aware.\n\nBusiness is resolved from the trusted internal payment row (via\n``idempotency_key``), never from client input. Amount/currency are\nverified server-side; mismatches are rejected without mutation.\nRequires PAYMENT_WEBHOOK_SECRET to be configured.",
+        "operationId": "payment_webhook_api_v1_payments_webhook_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PaymentWebhookIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Payment Webhook Api V1 Payments Webhook Post"
                 }
               }
             }
@@ -7486,7 +7838,7 @@
         "tags": [
           "owner"
         ],
-        "summary": "Owner business overview",
+        "summary": "Owner business overview (scope-aware)",
         "operationId": "overview_api_v1_owner_overview_get",
         "security": [
           {
@@ -7494,6 +7846,23 @@
           }
         ],
         "parameters": [
+          {
+            "name": "scope",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 64
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Scope"
+            }
+          },
           {
             "name": "soon_days",
             "in": "query",
@@ -7588,7 +7957,7 @@
         "tags": [
           "owner"
         ],
-        "summary": "Owner revenue report",
+        "summary": "Owner revenue report (scope-aware)",
         "operationId": "revenue_api_v1_owner_revenue_get",
         "security": [
           {
@@ -7596,6 +7965,23 @@
           }
         ],
         "parameters": [
+          {
+            "name": "scope",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 64
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Scope"
+            }
+          },
           {
             "name": "date_from",
             "in": "query",
@@ -7678,7 +8064,7 @@
         "tags": [
           "owner"
         ],
-        "summary": "Owner leads/conversion report",
+        "summary": "Owner leads/conversion report (scope-aware)",
         "operationId": "leads_api_v1_owner_leads_get",
         "security": [
           {
@@ -7686,6 +8072,23 @@
           }
         ],
         "parameters": [
+          {
+            "name": "scope",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 64
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Scope"
+            }
+          },
           {
             "name": "date_from",
             "in": "query",
@@ -7859,6 +8262,568 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/CombinedOverview"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/owner/alerts": {
+      "get": {
+        "tags": [
+          "owner"
+        ],
+        "summary": "Owner alerts/exceptions (rule-based, scope-aware)",
+        "operationId": "alerts_api_v1_owner_alerts_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "scope",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 64
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Scope"
+            }
+          },
+          {
+            "name": "soon_days",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 90,
+              "minimum": 1,
+              "default": 7,
+              "title": "Soon Days"
+            }
+          },
+          {
+            "name": "date_from",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 32
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Date From"
+            }
+          },
+          {
+            "name": "date_to",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 32
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Date To"
+            }
+          },
+          {
+            "name": "preset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 16
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": "30d",
+              "title": "Preset"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OwnerAlertsReport"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/owner/growth": {
+      "get": {
+        "tags": [
+          "owner"
+        ],
+        "summary": "Owner growth: current vs previous period (scope-aware)",
+        "operationId": "growth_api_v1_owner_growth_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "scope",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 64
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Scope"
+            }
+          },
+          {
+            "name": "date_from",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 32
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Date From"
+            }
+          },
+          {
+            "name": "date_to",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 32
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Date To"
+            }
+          },
+          {
+            "name": "preset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 16
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": "30d",
+              "title": "Preset"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OwnerGrowthReport"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/owner/renewals": {
+      "get": {
+        "tags": [
+          "owner"
+        ],
+        "summary": "Owner renewal buckets 7/14/30d + overdue (scope-aware)",
+        "operationId": "renewals_api_v1_owner_renewals_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "scope",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 64
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Scope"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OwnerRenewalsReport"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/owner/payments": {
+      "get": {
+        "tags": [
+          "owner"
+        ],
+        "summary": "Owner payment health + attention queue (scope-aware)",
+        "operationId": "payments_api_v1_owner_payments_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "scope",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 64
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Scope"
+            }
+          },
+          {
+            "name": "date_from",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 32
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Date From"
+            }
+          },
+          {
+            "name": "date_to",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 32
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Date To"
+            }
+          },
+          {
+            "name": "preset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 16
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": "30d",
+              "title": "Preset"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OwnerPaymentsReport"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/owner/attendance": {
+      "get": {
+        "tags": [
+          "owner"
+        ],
+        "summary": "Owner attendance trend + decline signals (scope-aware)",
+        "operationId": "attendance_api_v1_owner_attendance_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "scope",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 64
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Scope"
+            }
+          },
+          {
+            "name": "inactivity_days",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 90,
+              "minimum": 1,
+              "default": 14,
+              "title": "Inactivity Days"
+            }
+          },
+          {
+            "name": "date_from",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 32
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Date From"
+            }
+          },
+          {
+            "name": "date_to",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 32
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Date To"
+            }
+          },
+          {
+            "name": "preset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 16
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": "30d",
+              "title": "Preset"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OwnerAttendanceReport"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/owner/automation-health": {
+      "get": {
+        "tags": [
+          "owner"
+        ],
+        "summary": "Owner automation/worker health (read-only, scope-aware)",
+        "operationId": "automation_health_api_v1_owner_automation_health_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "scope",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 64
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Scope"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OwnerAutomationReport"
                 }
               }
             }
@@ -8470,6 +9435,51 @@
         }
       }
     },
+    "/api/v1/communications/handoff": {
+      "post": {
+        "tags": [
+          "communications"
+        ],
+        "summary": "AI -> staff handoff",
+        "description": "Create a staff follow-up task from an AI/staff handoff (Prompt 7).\n\nThe summary carries ONLY caller-verified information (names, interests,\nbooking state already in the database) \u2014 never secrets, never another\nbusiness's data. Scoped to the staff member's own business.",
+        "operationId": "create_handoff_api_v1_communications_handoff_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HandoffIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
     "/api/v1/whatsapp/webhook": {
       "get": {
         "tags": [
@@ -8548,12 +9558,123 @@
         }
       }
     },
+    "/api/v1/whatsapp/webhook/{business_key}": {
+      "get": {
+        "tags": [
+          "whatsapp"
+        ],
+        "summary": "Meta webhook verification (pinned)",
+        "description": "Verification PINNED to one business (two Meta apps -> two URLs).\n\nOnly ``<business_key>``'s OWN verify token is accepted here, so a Nest\nverification challenge can never succeed against the Prime endpoint.",
+        "operationId": "verify_for_business_api_v1_whatsapp_webhook__business_key__get",
+        "parameters": [
+          {
+            "name": "business_key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Business Key"
+            }
+          },
+          {
+            "name": "hub.mode",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "",
+              "title": "Hub.Mode"
+            }
+          },
+          {
+            "name": "hub.verify_token",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "",
+              "title": "Hub.Verify Token"
+            }
+          },
+          {
+            "name": "hub.challenge",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "",
+              "title": "Hub.Challenge"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "whatsapp"
+        ],
+        "summary": "WhatsApp inbound webhook (pinned)",
+        "description": "Inbound PINNED to one business (two Meta apps -> two URLs).\n\nThe URL path (server configuration per Meta app) is the business signal;\nthe payload's phone_number_id is cross-checked when the business has a\nconfigured number, and mismatches ack WITHOUT writes (no cross-tenant\nrecords on misconfiguration). Signature is checked against ONLY that\nbusiness's app secret.",
+        "operationId": "inbound_for_business_api_v1_whatsapp_webhook__business_key__post",
+        "parameters": [
+          {
+            "name": "business_key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Business Key"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/whatsapp/send": {
       "post": {
         "tags": [
           "whatsapp"
         ],
         "summary": "Staff WhatsApp send",
+        "description": "Staff outbound send using ONLY the staff member's OWN business creds.\n\nThe business comes from the server-side BusinessContext (JWT + DB\nmembership) \u2014 a forged ``business_id`` in the request can never select\nanother business's credentials.",
         "operationId": "staff_send_api_v1_whatsapp_send_post",
         "requestBody": {
           "content": {
@@ -8581,6 +9702,30 @@
                 "schema": {
                   "$ref": "#/components/schemas/HTTPValidationError"
                 }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/api/v1/integrations/status": {
+      "get": {
+        "tags": [
+          "integrations"
+        ],
+        "summary": "Integration configuration status (safe)",
+        "operationId": "integration_status_api_v1_integrations_status_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
               }
             }
           }
@@ -11605,6 +12750,72 @@
         ],
         "title": "DashboardOverviewOut"
       },
+      "DomainEventOut": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "event_type": {
+            "type": "string",
+            "title": "Event Type"
+          },
+          "entity_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Entity Type"
+          },
+          "entity_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Entity Id"
+          },
+          "actor_user_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Actor User Id"
+          },
+          "payload": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Payload",
+            "default": {}
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "event_type",
+          "created_at"
+        ],
+        "title": "DomainEventOut"
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -11617,6 +12828,52 @@
         },
         "type": "object",
         "title": "HTTPValidationError"
+      },
+      "HandoffIn": {
+        "properties": {
+          "customer_name": {
+            "type": "string",
+            "maxLength": 200,
+            "title": "Customer Name",
+            "default": ""
+          },
+          "customer_phone": {
+            "type": "string",
+            "maxLength": 32,
+            "title": "Customer Phone",
+            "default": ""
+          },
+          "conversation_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Conversation Id"
+          },
+          "summary_points": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "maxItems": 10,
+            "title": "Summary Points"
+          },
+          "reason": {
+            "type": "string",
+            "maxLength": 500,
+            "title": "Reason",
+            "default": ""
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "HandoffIn",
+        "description": "AI -> staff handoff (Prompt 7): verified summary only, no secrets."
       },
       "HealthResponse": {
         "properties": {
@@ -13569,6 +14826,205 @@
         ],
         "title": "OverviewTasks"
       },
+      "OwnerAlertItem": {
+        "properties": {
+          "severity": {
+            "type": "string",
+            "title": "Severity",
+            "description": "critical | warning | info"
+          },
+          "business": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Business"
+          },
+          "category": {
+            "type": "string",
+            "title": "Category",
+            "description": "finance | membership | leads | attendance | automation"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "detail": {
+            "type": "string",
+            "title": "Detail",
+            "default": ""
+          },
+          "count": {
+            "type": "integer",
+            "title": "Count",
+            "default": 0
+          },
+          "observed_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Observed At"
+          },
+          "drill": {
+            "type": "string",
+            "title": "Drill",
+            "description": "Owner UI section hint: payments | renewals | members | leads | automation"
+          }
+        },
+        "type": "object",
+        "required": [
+          "severity",
+          "category",
+          "title",
+          "observed_at",
+          "drill"
+        ],
+        "title": "OwnerAlertItem"
+      },
+      "OwnerAlertsReport": {
+        "properties": {
+          "generated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Generated At"
+          },
+          "scope": {
+            "type": "string",
+            "title": "Scope"
+          },
+          "combined": {
+            "type": "boolean",
+            "title": "Combined",
+            "default": false
+          },
+          "window": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Window"
+          },
+          "rules": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Rules"
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total",
+            "default": 0
+          },
+          "alerts": {
+            "items": {
+              "$ref": "#/components/schemas/OwnerAlertItem"
+            },
+            "type": "array",
+            "title": "Alerts"
+          }
+        },
+        "type": "object",
+        "required": [
+          "generated_at",
+          "scope"
+        ],
+        "title": "OwnerAlertsReport"
+      },
+      "OwnerAttendanceItem": {
+        "properties": {
+          "business": {
+            "$ref": "#/components/schemas/BusinessRef"
+          },
+          "attendance": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Attendance"
+          }
+        },
+        "type": "object",
+        "required": [
+          "business"
+        ],
+        "title": "OwnerAttendanceItem"
+      },
+      "OwnerAttendanceReport": {
+        "properties": {
+          "generated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Generated At"
+          },
+          "scope": {
+            "type": "string",
+            "title": "Scope"
+          },
+          "combined": {
+            "type": "boolean",
+            "title": "Combined",
+            "default": false
+          },
+          "window": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Window"
+          },
+          "businesses": {
+            "items": {
+              "$ref": "#/components/schemas/OwnerAttendanceItem"
+            },
+            "type": "array",
+            "title": "Businesses"
+          }
+        },
+        "type": "object",
+        "required": [
+          "generated_at",
+          "scope"
+        ],
+        "title": "OwnerAttendanceReport"
+      },
+      "OwnerAutomationItem": {
+        "properties": {
+          "business": {
+            "$ref": "#/components/schemas/BusinessRef"
+          },
+          "health": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Health"
+          }
+        },
+        "type": "object",
+        "required": [
+          "business"
+        ],
+        "title": "OwnerAutomationItem"
+      },
+      "OwnerAutomationReport": {
+        "properties": {
+          "generated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Generated At"
+          },
+          "scope": {
+            "type": "string",
+            "title": "Scope"
+          },
+          "combined": {
+            "type": "boolean",
+            "title": "Combined",
+            "default": false
+          },
+          "businesses": {
+            "items": {
+              "$ref": "#/components/schemas/OwnerAutomationItem"
+            },
+            "type": "array",
+            "title": "Businesses"
+          }
+        },
+        "type": "object",
+        "required": [
+          "generated_at",
+          "scope"
+        ],
+        "title": "OwnerAutomationReport"
+      },
       "OwnerBusinessOverview": {
         "properties": {
           "business": {
@@ -13621,6 +15077,42 @@
         ],
         "title": "OwnerBusinessOverview"
       },
+      "OwnerGrowthReport": {
+        "properties": {
+          "generated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Generated At"
+          },
+          "scope": {
+            "type": "string",
+            "title": "Scope"
+          },
+          "combined": {
+            "type": "boolean",
+            "title": "Combined",
+            "default": false
+          },
+          "window": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Window"
+          },
+          "businesses": {
+            "items": {
+              "$ref": "#/components/schemas/OwnerScopeBusiness"
+            },
+            "type": "array",
+            "title": "Businesses"
+          }
+        },
+        "type": "object",
+        "required": [
+          "generated_at",
+          "scope"
+        ],
+        "title": "OwnerGrowthReport"
+      },
       "OwnerLeadsReport": {
         "properties": {
           "business_id": {
@@ -13654,6 +15146,107 @@
         ],
         "title": "OwnerLeadsReport"
       },
+      "OwnerPaymentsItem": {
+        "properties": {
+          "business": {
+            "$ref": "#/components/schemas/BusinessRef"
+          },
+          "health": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Health"
+          }
+        },
+        "type": "object",
+        "required": [
+          "business"
+        ],
+        "title": "OwnerPaymentsItem"
+      },
+      "OwnerPaymentsReport": {
+        "properties": {
+          "generated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Generated At"
+          },
+          "scope": {
+            "type": "string",
+            "title": "Scope"
+          },
+          "combined": {
+            "type": "boolean",
+            "title": "Combined",
+            "default": false
+          },
+          "window": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Window"
+          },
+          "businesses": {
+            "items": {
+              "$ref": "#/components/schemas/OwnerPaymentsItem"
+            },
+            "type": "array",
+            "title": "Businesses"
+          }
+        },
+        "type": "object",
+        "required": [
+          "generated_at",
+          "scope"
+        ],
+        "title": "OwnerPaymentsReport"
+      },
+      "OwnerRenewalsItem": {
+        "properties": {
+          "business": {
+            "$ref": "#/components/schemas/BusinessRef"
+          },
+          "buckets": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Buckets"
+          }
+        },
+        "type": "object",
+        "required": [
+          "business"
+        ],
+        "title": "OwnerRenewalsItem"
+      },
+      "OwnerRenewalsReport": {
+        "properties": {
+          "generated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Generated At"
+          },
+          "scope": {
+            "type": "string",
+            "title": "Scope"
+          },
+          "combined": {
+            "type": "boolean",
+            "title": "Combined",
+            "default": false
+          },
+          "businesses": {
+            "items": {
+              "$ref": "#/components/schemas/OwnerRenewalsItem"
+            },
+            "type": "array",
+            "title": "Businesses"
+          }
+        },
+        "type": "object",
+        "required": [
+          "generated_at",
+          "scope"
+        ],
+        "title": "OwnerRenewalsReport"
+      },
       "OwnerRevenueReport": {
         "properties": {
           "business_id": {
@@ -13686,6 +15279,23 @@
           "summary"
         ],
         "title": "OwnerRevenueReport"
+      },
+      "OwnerScopeBusiness": {
+        "properties": {
+          "business": {
+            "$ref": "#/components/schemas/BusinessRef"
+          },
+          "metrics": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Metrics"
+          }
+        },
+        "type": "object",
+        "required": [
+          "business"
+        ],
+        "title": "OwnerScopeBusiness"
       },
       "Page_ApprovalOut_": {
         "properties": {
@@ -13872,6 +15482,37 @@
           "offset"
         ],
         "title": "Page[CustomerOut]"
+      },
+      "Page_DomainEventOut_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/DomainEventOut"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total"
+          },
+          "limit": {
+            "type": "integer",
+            "title": "Limit"
+          },
+          "offset": {
+            "type": "integer",
+            "title": "Offset"
+          }
+        },
+        "type": "object",
+        "required": [
+          "items",
+          "total",
+          "limit",
+          "offset"
+        ],
+        "title": "Page[DomainEventOut]"
       },
       "Page_IdentityLinkOut_": {
         "properties": {
@@ -14535,6 +16176,62 @@
           "status"
         ],
         "title": "PaymentStatusIn"
+      },
+      "PaymentWebhookIn": {
+        "properties": {
+          "idempotency_key": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Idempotency Key"
+          },
+          "status": {
+            "type": "string",
+            "maxLength": 32,
+            "minLength": 1,
+            "title": "Status"
+          },
+          "amount": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "string",
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Amount"
+          },
+          "currency": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 8
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Currency"
+          },
+          "provider": {
+            "type": "string",
+            "maxLength": 64,
+            "title": "Provider",
+            "default": "mock"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "idempotency_key",
+          "status"
+        ],
+        "title": "PaymentWebhookIn"
       },
       "PersonLinkOut": {
         "properties": {
@@ -15684,6 +17381,22 @@
         "type": "object",
         "title": "RenewalStats"
       },
+      "RenewalStatusIn": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "maxLength": 32,
+            "minLength": 1,
+            "title": "Status"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "status"
+        ],
+        "title": "RenewalStatusIn"
+      },
       "RevenueStats": {
         "properties": {
           "collected": {
@@ -16792,6 +18505,22 @@
           "code"
         ],
         "title": "TemplateIn"
+      },
+      "TrialOutcomeIn": {
+        "properties": {
+          "outcome": {
+            "type": "string",
+            "maxLength": 32,
+            "title": "Outcome"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "outcome"
+        ],
+        "title": "TrialOutcomeIn",
+        "description": "Staff-recorded trial/visit outcome (Prompt 7 growth engine)."
       },
       "TriggerIn": {
         "properties": {

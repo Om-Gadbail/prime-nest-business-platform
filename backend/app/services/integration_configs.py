@@ -248,8 +248,8 @@ def resolve_gemini_config(settings: Settings) -> GeminiConfig:
     """
     return GeminiConfig(
         api_key=(settings.gemini_api_key or ""),
-        model=(settings.gemini_model or "gemini-2.5-flash").strip()
-        or "gemini-2.5-flash",
+        model=(settings.gemini_model or "gemini-3.6-flash").strip()
+        or "gemini-3.6-flash",
         timeout_seconds=int(settings.ai_timeout_seconds or 20),
         enabled=bool(settings.ai_enabled),
     )

@@ -605,9 +605,8 @@ def attendance_window(
         select(day_col.label("day"), func.count().label("count"))
         .where(
             Attendance.business_id == business_id,
-            Attendance.checked_in_at >= datetime.combine(
-                start_date, datetime.min.time(), tzinfo=timezone.utc
-            ),
+            Attendance.checked_in_at
+            >= datetime.combine(start_date, datetime.min.time(), tzinfo=timezone.utc),
             Attendance.checked_in_at
             <= datetime.combine(end_date, datetime.max.time(), tzinfo=timezone.utc),
         )
@@ -688,7 +687,9 @@ def attendance_window(
         "days": span_days,
         "avg_per_day": round(total / span_days, 2) if span_days else 0.0,
         "active_members": active_members,
-        "visits_per_member": round(total / active_members, 2) if active_members else 0.0,
+        "visits_per_member": round(total / active_members, 2)
+        if active_members
+        else 0.0,
         "daily_trend": trend,
         "declining": declining[:50],
         "declining_count": len(declining),
@@ -864,7 +865,7 @@ def automation_health(db: Session, *, business_id: uuid.UUID) -> dict:
     last_success = db.execute(
         select(func.max(AutomationExecution.completed_at)).where(
             AutomationExecution.business_id == business_id,
-            AutomationExecution.status == "succeeded",
+            AutomationExecution.status.in_(("succeeded", "completed")),
         )
     ).scalar()
     last_failure = db.execute(
@@ -873,13 +874,21 @@ def automation_health(db: Session, *, business_id: uuid.UUID) -> dict:
             AutomationExecution.status == "failed",
         )
     ).scalar()
-    pending_retry = sum(by_status.get(s, 0) for s in ("pending", "retrying", "running"))
+    # Prompt 7 canonical statuses included alongside legacy Block 8 rows:
+    # queued==pending (drainable), completed==succeeded (success).
+    pending_retry = sum(
+        by_status.get(s, 0) for s in ("pending", "queued", "retrying", "running")
+    )
+    succeeded_total = sum(by_status.get(s, 0) for s in ("succeeded", "completed"))
+    skipped_total = int(by_status.get("skipped", 0))
     evaluated = total_exec > 0 or rules_total > 0
     return {
         "rules_total": rules_total,
         "rules_active": rules_active,
         "executions_total": total_exec,
         "executions_by_status": by_status,
+        "executions_succeeded": succeeded_total,
+        "executions_skipped": skipped_total,
         "failed_24h": failed_24h,
         "pending_retry": pending_retry,
         "last_success_at": last_success.isoformat() if last_success else None,

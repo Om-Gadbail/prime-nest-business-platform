@@ -102,7 +102,8 @@ class NoopChatProvider(ChatProvider):
 class GeminiChatProvider(ChatProvider):
     """Gemini provider adapter (generateContent, function calling).
 
-    Model is configurable via GEMINI_MODEL (default gemini-2.0-flash).
+    Model is configurable via GEMINI_MODEL (default gemini-3.6-flash,
+    live-verified Sep 2026; 2.5-flash 404s for new keys, 2.0-flash retired).
     Uses the REST generateContent endpoint with httpx (no vendor SDK in
     business logic). Tool calling: Gemini functionDeclarations; responses
     parsed into {name, args} calls validated downstream.
@@ -120,7 +121,7 @@ class GeminiChatProvider(ChatProvider):
 
     def __init__(self, settings: Settings) -> None:
         self._s = settings
-        self.model = (settings.gemini_model or "gemini-2.5-flash").strip()
+        self.model = (settings.gemini_model or "gemini-3.6-flash").strip()
 
     def chat(
         self,

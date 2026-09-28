@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.api import deps
 from app.api.v1.endpoints._helpers import map_service_error, record_audit, request_id
+from app.core.config import get_settings
 from app.schemas.common import Page, list_params
 from app.schemas.crm import CustomerOut
 from app.schemas.leads import (
@@ -93,6 +94,7 @@ def create_lead(
             actor_user_id=ctx.user.id,
             contact_id=contact_id,
             assigned_user_id=assigned_user_id,
+            settings=get_settings(),
         )
         db.commit()
         db.refresh(lead)

@@ -146,13 +146,14 @@ class Settings(BaseSettings):
     # --- Blocks 8-12: Gemini AI gateway (provider-neutral, Block 10) ---
     # GEMINI_API_KEY lives ONLY in backend env; never exposed to frontend.
     # GEMINI_MODEL is configurable; prefer a current stable Flash-class model.
-    # NOTE (Pre-Prompt-7 foundation, verified Sep 2026): `gemini-2.0-flash`
-    # was shut down by Google (changelog: deprecated Jun 2026). The default
-    # is now `gemini-2.5-flash` (stable, v1beta generateContent, supports
-    # temperature + functionDeclarations like the gateway sends). Override
-    # via GEMINI_MODEL env for newer Flash models (3.x drops temperature).
+    # NOTE (Prompt 7, verified live Sep 2026): `gemini-2.5-flash` returns 404
+    # "no longer available to new users" for recently provisioned keys (and
+    # `gemini-2.0-flash` was shut down Jun 2026). The default is now
+    # `gemini-3.6-flash` (live-verified 200 with the gateway's v1beta
+    # generateContent shape incl. temperature 0.4 + functionDeclarations).
+    # Override via GEMINI_MODEL env for newer Flash models.
     gemini_api_key: str = Field(default="")
-    gemini_model: str = Field(default="gemini-2.5-flash", max_length=128)
+    gemini_model: str = Field(default="gemini-3.6-flash", max_length=128)
     ai_max_output_tokens: int = Field(default=1024, ge=64, le=8192)
     ai_max_tool_calls: int = Field(default=6, ge=1, le=20)
     ai_public_chat_enabled: bool = Field(default=True)

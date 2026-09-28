@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from sqlalchemy.orm import Session
 
 from app.api import deps
-from app.api.v1.endpoints._helpers import map_service_error
+from app.api.v1.endpoints._helpers import map_service_error, record_audit, request_id
 from app.core.config import get_settings
-from app.schemas.blocks812 import PreferenceIn, SendMessageIn, TemplateIn
+from app.schemas.blocks812 import HandoffIn, PreferenceIn, SendMessageIn, TemplateIn
 from app.services import communications as comms
 from app.services.authorization import AuthenticatedContext
 from app.repositories import blocks812 as repo
@@ -68,6 +68,14 @@ def list_messages(
                 "body": m.body,
                 "status": m.status,
                 "provider": m.provider,
+                # Prompt 7 communication-center visibility (additive):
+                # provider/message reference, template, recipient, and the
+                # automation execution that produced the message.
+                "provider_message_id": m.provider_message_id,
+                "template_code": m.template_code,
+                "recipient": m.recipient,
+                "automation_id": m.automation_id,
+                "provider_mode": ("LIVE" if m.provider == "whatsapp" else "MOCK"),
             }
             for m in items
         ],
@@ -270,3 +278,50 @@ def timeline(
         ],
         "tasks": [{"id": t.id, "status": t.status, "title": t.title} for t in tasks],
     }
+
+
+@router.post("/handoff", status_code=201, summary="AI -> staff handoff")
+def create_handoff(
+    payload: HandoffIn,
+    request: Request,
+    db: Session = Depends(deps.get_db),
+    ctx: AuthenticatedContext = Depends(
+        deps.require_permission("communications.manage")
+    ),
+):
+    """Create a staff follow-up task from an AI/staff handoff (Prompt 7).
+
+    The summary carries ONLY caller-verified information (names, interests,
+    booking state already in the database) — never secrets, never another
+    business's data. Scoped to the staff member's own business.
+    """
+    assert ctx.business is not None
+    try:
+        from app.services import growth_engine as growth_service
+
+        task = growth_service.create_handoff(
+            db,
+            business_id=ctx.business.id,
+            customer_name=payload.customer_name,
+            customer_phone=payload.customer_phone,
+            conversation_id=payload.conversation_id,
+            summary_points=list(payload.summary_points or []),
+            reason=payload.reason,
+            actor_user_id=ctx.user.id,
+        )
+        db.commit()
+        db.refresh(task)
+    except Exception as exc:
+        db.rollback()
+        raise map_service_error(exc) from exc
+    record_audit(
+        db,
+        business_id=ctx.business.id,
+        action="task.created",
+        actor_user_id=ctx.user.id,
+        entity_type="task",
+        entity_id=task.id,
+        request_id=request_id(request),
+        meta={"handoff": True},
+    )
+    return {"id": task.id, "title": task.title, "status": task.status}

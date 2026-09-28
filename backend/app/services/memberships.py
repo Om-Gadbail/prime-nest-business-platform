@@ -545,8 +545,14 @@ def renew_membership(
     membership_id: object,
     data: dict,
     actor_user_id: uuid.UUID | None = None,
+    settings=None,
 ):
-    """Renew: new membership row + renewal link. Concurrency-safe (409)."""
+    """Renew: new membership row + renewal link. Concurrency-safe (409).
+
+    With ``settings``, the growth engine stops pending renewal nudges for
+    the old membership and routes ``membership.renewed`` through
+    automation (confirmation). History is preserved either way.
+    """
     from app.services import domain_events as events
 
     old = get_membership(db, business_id=business_id, membership_id=membership_id)
@@ -649,6 +655,22 @@ def renew_membership(
             actor_user_id=actor_user_id,
             payload={"membership_id": str(new_membership.id)},
         )
+        if settings is not None and bool(
+            getattr(settings, "automation_enabled", False)
+        ):
+            try:
+                from app.services import growth_engine as _growth
+
+                _growth.on_membership_renewed(
+                    db,
+                    settings,
+                    business_id=business_id,
+                    new_membership=new_membership,
+                    old_membership_id=old.id,
+                    actor_user_id=actor_user_id,
+                )
+            except Exception:  # noqa: BLE001 - automation never breaks renewal
+                pass
     return new_membership
 
 

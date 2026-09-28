@@ -44,6 +44,14 @@ class BookingTransitionIn(BaseModel):
     cancellation_reason: str = Field(default="", max_length=500)
 
 
+class TrialOutcomeIn(BaseModel):
+    """Staff-recorded trial/visit outcome (Prompt 7 growth engine)."""
+
+    model_config = {"extra": "forbid"}
+
+    outcome: str = Field(max_length=32)  # attended | no_show
+
+
 class BookingOut(BaseModel):
     model_config = {"from_attributes": True}
 

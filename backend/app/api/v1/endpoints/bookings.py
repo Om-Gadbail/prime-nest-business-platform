@@ -9,11 +9,13 @@ from sqlalchemy.orm import Session
 
 from app.api import deps
 from app.api.v1.endpoints._helpers import map_service_error, record_audit, request_id
+from app.core.config import get_settings
 from app.schemas.bookings import (
     BookingCreate,
     BookingOut,
     BookingTransitionIn,
     BookingUpdate,
+    TrialOutcomeIn,
 )
 from app.schemas.common import Page, list_params
 from app.services import bookings as bookings_service
@@ -83,6 +85,7 @@ def create_booking(
             contact_id=contact_id,
             lead_id=lead_id,
             assigned_user_id=assigned_user_id,
+            settings=get_settings(),
         )
         db.commit()
         db.refresh(booking)
@@ -165,6 +168,7 @@ def _transition(
             to_status=to_status,
             actor_user_id=ctx.user.id,
             cancellation_reason=cancellation_reason,
+            settings=get_settings(),
         )
         db.commit()
         db.refresh(booking)
@@ -249,3 +253,51 @@ def reopen_booking(
 ) -> BookingOut:
     """Explicit staff re-open (cancelled/no-show -> requested only)."""
     return _transition(db, request, ctx, booking_id, "requested")
+
+
+@router.post(
+    "/{booking_id}/trial-outcome",
+    response_model=BookingOut,
+    summary="Record trial/visit outcome (attended/no-show + automation)",
+)
+def trial_outcome(
+    booking_id: str,
+    payload: TrialOutcomeIn,
+    request: Request,
+    db: Session = Depends(deps.get_db),
+    ctx: AuthenticatedContext = Depends(deps.require_permission("bookings.update")),
+) -> BookingOut:
+    """Staff-recorded trial/visit outcome (Prompt 7 growth engine).
+
+    Backed by the real booking state machine (completed / no_show); only
+    trial/visit-type bookings qualify. Fires the outcome automation
+    (no-show reschedule follow-up) synchronously in the staff context.
+    """
+    assert ctx.business is not None and ctx.user is not None
+    try:
+        from app.services import growth_engine as growth_service
+
+        booking, _ = growth_service.record_trial_outcome(
+            db,
+            get_settings(),
+            business_id=ctx.business.id,
+            booking_id=booking_id,
+            outcome=payload.outcome,
+            actor_user_id=ctx.user.id,
+        )
+        db.commit()
+        db.refresh(booking)
+    except Exception as exc:
+        db.rollback()
+        raise map_service_error(exc) from exc
+    record_audit(
+        db,
+        business_id=ctx.business.id,
+        action="booking.status_changed",
+        actor_user_id=ctx.user.id,
+        entity_type="booking",
+        entity_id=booking.id,
+        request_id=request_id(request),
+        meta={"status": str(booking.status), "outcome": payload.outcome[:32]},
+    )
+    return BookingOut.model_validate(booking)

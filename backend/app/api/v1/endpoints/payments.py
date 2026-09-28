@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 
 from app.api import deps
 from app.api.v1.endpoints._helpers import map_service_error, record_audit, request_id
+from app.core.config import get_settings
 from app.schemas.common import Page, list_params
 from app.schemas.operations import (
     PaymentCreate,
@@ -136,6 +137,7 @@ def set_payment_status(
             payment_id=payment_id,
             to_status=payload.status,
             actor_user_id=ctx.user.id,
+            settings=get_settings(),
         )
         db.commit()
         db.refresh(payment)
@@ -266,6 +268,7 @@ async def payment_webhook(
             business_id=row.business_id,
             provider=payload.provider,
             payload=payload.model_dump(mode="json"),
+            settings=settings,
         )
         db.commit()
     except Exception as exc:

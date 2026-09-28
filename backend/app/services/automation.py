@@ -1,4 +1,4 @@
-"""Automation engine (Block 8, steps 39-43).
+"""Automation engine (Block 8, steps 39-43; Prompt 7 growth extension).
 
 Domain Events -> EventBus (dispatch) -> Rules -> Conditions -> Actions ->
 Audit -> Retry. Every execution is idempotent (business_id + idempotency),
@@ -7,6 +7,20 @@ auditable, retry-safe (bounded), permission-aware, observable, failure-safe.
 Action types: send_message | create_task | create_notification |
 schedule_followup | request_review | track_referral | escalate |
 ai_recommendation | webhook_log.
+
+Execution statuses (Prompt 7 canonical): queued | running | completed |
+failed | skipped | cancelled. Legacy Block 8 rows (pending/succeeded/
+retrying) are read as equivalents — never rewritten — so history stays
+interpretable: pending==queued, succeeded==completed, retrying==queued
+(drainable). New executions always use the canonical set.
+
+Two trigger paths (Prompt 7 §28 — website stays fast):
+- dispatch_event: synchronous rule run (staff/ops/tests/worker contexts).
+- enqueue_for_event: persist queued executions only (public website intake);
+  the worker drains them via retry_due (genuine re-execution, bounded).
+
+Opt-out safety: a send blocked by communication preferences resolves to
+``skipped`` (terminal, no retry) — never failed/retrying, never a send.
 """
 
 from __future__ import annotations
@@ -18,11 +32,85 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings
-from app.models.ops_vocab import AUTOMATION_ACTION_TYPES
+from app.models.ops_vocab import (
+    AUTOMATION_ACTION_TYPES,
+    AUTOMATION_PENDING_STATUSES,
+    AUTOMATION_SUCCESS_STATUSES,
+    AUTOMATION_TERMINAL_STATUSES,
+)
 from app.repositories import blocks812 as repo
 from app.services import domain_events as events
 
 RETRYABLE = frozenset({"failed", "retrying"})
+
+
+class _SkippedAction(Exception):
+    """Terminal skip: ineligible/opt-out/cancelled (recorded, never retried)."""
+
+
+def _business_render_context(db: Session, *, business_id) -> dict:
+    """Shared template variables from Business Configuration (no hardcoding)."""
+    render_ctx: dict = {}
+    try:
+        from app.repositories import businesses as _business_repo
+
+        business = _business_repo.get_by_id(db, business_id)
+        if business is not None:
+            render_ctx["business"] = str(getattr(business, "name", "") or "")
+            render_ctx["business_phone"] = str(getattr(business, "phone", "") or "")
+            render_ctx["business_city"] = str(getattr(business, "city", "") or "")
+    except Exception:  # noqa: BLE001 - missing config never breaks sends
+        pass
+    return render_ctx
+
+
+# Legacy -> canonical status equivalence (reads only; history untouched).
+_LEGACY_SUCCESS = frozenset({"succeeded"}) | AUTOMATION_SUCCESS_STATUSES
+_LEGACY_DRAINABLE = frozenset({"pending", "retrying"}) | AUTOMATION_PENDING_STATUSES
+
+# Marker raised when a recipient opted out (maps to skipped, not failed).
+OPT_OUT_MARKER = "Recipient has opted out"
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _is_terminal(status: str) -> bool:
+    value = str(status or "")
+    return value in AUTOMATION_TERMINAL_STATUSES or value == "succeeded"
+
+
+def _is_success(status: str) -> bool:
+    return str(status or "") in _LEGACY_SUCCESS
+
+
+def _is_drainable(status: str) -> bool:
+    return str(status or "") in _LEGACY_DRAINABLE
+
+
+def _audit(
+    db: Session,
+    *,
+    business_id,
+    action: str,
+    meta: dict | None = None,
+    actor_user_id=None,
+) -> None:
+    """Best-effort automation audit (never breaks the execution itself)."""
+    try:
+        from app.services import audit as audit_service
+
+        audit_service.log_event(
+            db,
+            business_id=business_id,
+            action=action,
+            actor_user_id=actor_user_id,
+            entity_type="automation",
+            meta=dict(meta or {}),
+        )
+    except Exception:  # noqa: BLE001 - audit must never break automation
+        pass
 
 
 def _utcnow() -> datetime:
@@ -66,17 +154,33 @@ def dispatch_event(
     payload: dict | None = None,
     correlation_id: str = "",
 ) -> list:
-    """Persist the domain event, then run matching active rules synchronously."""
-    event = events.emit(
+    """Persist the domain event, then run matching active rules synchronously.
+
+    Duplicate-delivery safe (Prompt 7 §5, §10): when an identical event
+    (same business + type + entity + payload) was already recorded in the
+    last 24h — duplicated webhook, scheduler double-fire, worker retry,
+    application restart — the existing row is REUSED instead of emitting a
+    second one, so per-action idempotency keys reproduce and no second
+    WhatsApp message is ever produced for the same logical occurrence.
+    """
+    event = _recent_duplicate_event(
         db,
         business_id=business_id,
         event_type=event_type,
-        entity_type=entity_type,
         entity_id=entity_id,
-        actor_user_id=actor_user_id,
         payload=payload,
     )
-    db.flush()
+    if event is None:
+        event = events.emit(
+            db,
+            business_id=business_id,
+            event_type=event_type,
+            entity_type=entity_type,
+            entity_id=entity_id,
+            actor_user_id=actor_user_id,
+            payload=payload,
+        )
+        db.flush()
     if not settings.automation_enabled:
         return []
     return run_rules_for_event(
@@ -86,7 +190,62 @@ def dispatch_event(
         event=event,
         event_type=event_type,
         correlation_id=correlation_id or str(event.id),
+        actor_user_id=actor_user_id,
     )
+
+
+def _recent_duplicate_event(
+    db: Session,
+    *,
+    business_id,
+    event_type: str,
+    entity_id,
+    payload: dict | None,
+    window_hours: int = 24,
+) -> object | None:
+    """Find an identical recent event (same logical occurrence) or None."""
+    from sqlalchemy import select as _select
+    from app.models.operations import DomainEvent
+    from app.services import idempotency as idem_service
+
+    try:
+        digest = idem_service.payload_hash(dict(payload or {}))
+    except Exception:  # noqa: BLE001 - hashing never blocks dispatch
+        return None
+    try:
+        eid = (
+            entity_id
+            if isinstance(entity_id, uuid.UUID)
+            else (uuid.UUID(str(entity_id)) if entity_id not in (None, "") else None)
+        )
+    except (ValueError, AttributeError, TypeError):
+        eid = None
+    try:
+        cutoff = _utcnow() - timedelta(hours=max(1, window_hours))
+        stmt = (
+            _select(DomainEvent)
+            .where(
+                DomainEvent.business_id == business_id,
+                DomainEvent.event_type == event_type,
+                DomainEvent.created_at >= cutoff,
+            )
+            .order_by(DomainEvent.created_at.desc())
+            .limit(25)
+        )
+        if eid is not None:
+            stmt = stmt.where(DomainEvent.entity_id == eid)
+        for row in db.execute(stmt).scalars().all():
+            try:
+                if (
+                    idem_service.payload_hash(dict(getattr(row, "payload", None) or {}))
+                    == digest
+                ):
+                    return row
+            except Exception:  # noqa: BLE001 - one bad row never blocks
+                continue
+    except Exception:  # noqa: BLE001 - lookup failure -> emit fresh (safe)
+        return None
+    return None
 
 
 def run_rules_for_event(
@@ -97,12 +256,24 @@ def run_rules_for_event(
     event,
     event_type: str,
     correlation_id: str = "",
+    extra_context: dict | None = None,
+    actor_user_id=None,
 ) -> list:
     rules, _ = repo.list_rules(
         db, business_id=business_id, event_type=event_type, active_only=True
     )
     executions = []
     context = dict(getattr(event, "payload", None) or {})
+    if extra_context:
+        # Workflow-enriched variables (names, business facts) layer over the
+        # stored event payload. The event row stays the source of truth and
+        # idempotency keys derive from the event id — enrichment never
+        # creates duplicate sends, it only completes template variables.
+        for key, value in dict(extra_context).items():
+            if value not in (None, "") or key not in context:
+                context[key] = value
+    if context.get("display_name") and not context.get("name"):
+        context["name"] = context["display_name"]
     context.update(
         {
             "event_type": event_type,
@@ -122,8 +293,101 @@ def run_rules_for_event(
                 event=event,
                 context=context,
                 correlation_id=correlation_id or str(event.id),
+                actor_user_id=actor_user_id,
             )
         )
+    return executions
+
+
+def enqueue_for_event(
+    db: Session,
+    settings: Settings,
+    *,
+    business_id: uuid.UUID,
+    event,
+    event_type: str,
+    correlation_id: str = "",
+    extra_context: dict | None = None,
+    actor_user_id=None,
+) -> list:
+    """Persist queued executions for matching rules WITHOUT running actions.
+
+    Fast path for public website intake (Prompt 7 §28): the request commits
+    the domain event + queued jobs and returns; the worker drains them via
+    :func:`retry_due` (genuine execution: Gemini -> provider -> outcome).
+    Idempotent: re-enqueueing the same event returns existing rows.
+    """
+    rules, _ = repo.list_rules(
+        db, business_id=business_id, event_type=event_type, active_only=True
+    )
+    context = dict(getattr(event, "payload", None) or {})
+    if extra_context:
+        for key, value in dict(extra_context).items():
+            if value not in (None, "") or key not in context:
+                context[key] = value
+    if context.get("display_name") and not context.get("name"):
+        context["name"] = context["display_name"]
+    context.update(
+        {
+            "event_type": event_type,
+            "entity_type": getattr(event, "entity_type", None),
+            "entity_id": str(getattr(event, "entity_id", "") or ""),
+        }
+    )
+    executions = []
+    for rule in rules:
+        if not condition_matches(dict(rule.conditions or {}), context):
+            continue
+        actions = list(rule.actions or [])
+        if not actions:
+            continue
+        if not actions:
+            continue
+        for idx, action in enumerate(actions):
+            if str(action.get("type", "")) not in AUTOMATION_ACTION_TYPES:
+                continue
+            idem = _idem_key(
+                business_id=business_id,
+                rule_id=rule.id,
+                event_id=getattr(event, "id", ""),
+                action_idx=idx,
+            )
+            existing = repo.get_execution_by_idem(
+                db, business_id=business_id, idem=idem
+            )
+            if existing is not None:
+                executions.append(existing)
+                continue
+            exec_row = repo.create_execution(
+                db,
+                business_id=business_id,
+                fields={
+                    "rule_id": rule.id,
+                    "event_id": getattr(event, "id", None),
+                    "event_type": getattr(event, "event_type", ""),
+                    "status": "queued",
+                    "attempt_count": 0,
+                    "max_attempts": int(
+                        (rule.config or {}).get(
+                            "max_retries", settings.automation_max_attempts
+                        )
+                        or 5
+                    ),
+                    "idempotency_key": idem,
+                    "correlation_id": (correlation_id or str(event.id))[:64],
+                    "input_payload": {"action": action, "context": context},
+                    "scheduled_at": _utcnow(),
+                },
+            )
+            _audit(
+                db,
+                business_id=business_id,
+                action="automation.started",
+                meta={"rule": str(rule.name)[:120], "event": event_type},
+                actor_user_id=actor_user_id,
+            )
+            executions.append(exec_row)
+    db.flush()
     return executions
 
 
@@ -136,6 +400,7 @@ def execute_rule(
     event,
     context: dict,
     correlation_id: str = "",
+    actor_user_id=None,
 ) -> object:
     """Execute one rule's actions with per-action idempotency + bounded retry."""
     actions = list(rule.actions or [])
@@ -151,9 +416,20 @@ def execute_rule(
             action_idx=idx,
         )
         existing = repo.get_execution_by_idem(db, business_id=business_id, idem=idem)
-        if existing is not None and existing.status in ("succeeded", "running"):
+        if existing is not None and (
+            _is_success(existing.status) or existing.status == "running"
+        ):
             last_exec = existing
             continue  # duplicate event delivery -> no duplicate action
+        if existing is not None and existing.status in (
+            "queued",
+            "cancelled",
+            "skipped",
+        ):
+            # A queued/enqueued row already owns this action: the worker
+            # drains it (no double-run). Cancelled/skipped are terminal.
+            last_exec = existing
+            continue
         exec_row = existing
         if exec_row is None:
             exec_row = repo.create_execution(
@@ -177,6 +453,16 @@ def execute_rule(
                     "started_at": _utcnow(),
                 },
             )
+            _audit(
+                db,
+                business_id=business_id,
+                action="automation.started",
+                meta={
+                    "rule": str(rule.name)[:120],
+                    "event": str(getattr(event, "event_type", ""))[:64],
+                },
+                actor_user_id=actor_user_id,
+            )
         else:
             exec_row.attempt_count = int(exec_row.attempt_count or 0) + 1
             exec_row.status = "running"
@@ -190,16 +476,45 @@ def execute_rule(
                 context=context,
                 rule=rule,
                 event=event,
+                execution_id=exec_row.id,
+                actor_user_id=actor_user_id,
             )
-            exec_row.status = "succeeded"
+            exec_row.status = "completed"
             exec_row.output_payload = output
             exec_row.error = ""
             exec_row.completed_at = _utcnow()
+            _audit(
+                db,
+                business_id=business_id,
+                action="automation.completed",
+                meta={"rule": str(rule.name)[:120]},
+                actor_user_id=actor_user_id,
+            )
+        except _SkippedAction as skipped:
+            # Opt-out / ineligible: terminal skip, recorded with the reason.
+            # Never retried, never a send.
+            exec_row.status = "skipped"
+            exec_row.error = str(skipped)[:2000]
+            exec_row.completed_at = _utcnow()
+            _audit(
+                db,
+                business_id=business_id,
+                action="automation.skipped",
+                meta={"rule": str(rule.name)[:120], "reason": str(skipped)[:300]},
+                actor_user_id=actor_user_id,
+            )
         except Exception as exc:  # noqa: BLE001 - action failure recorded, never raised
             exec_row.error = str(exc)[:2000]
             if int(exec_row.attempt_count or 1) >= int(exec_row.max_attempts or 5):
                 exec_row.status = "failed"
                 exec_row.completed_at = _utcnow()
+                _audit(
+                    db,
+                    business_id=business_id,
+                    action="automation.failed",
+                    meta={"rule": str(rule.name)[:120], "error": str(exc)[:300]},
+                    actor_user_id=actor_user_id,
+                )
             else:
                 exec_row.status = "retrying"
                 exec_row.scheduled_at = _utcnow() + timedelta(minutes=15)
@@ -212,7 +527,7 @@ def execute_rule(
             "rule_id": rule.id,
             "event_id": getattr(event, "id", None),
             "event_type": getattr(event, "event_type", ""),
-            "status": "succeeded",
+            "status": "completed",
             "attempt_count": 0,
             "idempotency_key": _idem_key(
                 business_id=business_id,
@@ -238,6 +553,8 @@ def _run_action(
     context: dict,
     rule,
     event,
+    execution_id=None,
+    actor_user_id=None,
 ) -> dict:
     from app.services import communications as comms
     from app.repositories import blocks812 as brepo
@@ -267,21 +584,117 @@ def _run_action(
             )
             tpl = db.execute(stmt).scalars().first()
             if tpl is not None:
-                body = comms.render_template(
-                    tpl.body, {**context, **params.get("variables", {})}
+                # Business Configuration supplies shared variables (name,
+                # phone, address...): no hardcoded business data, and no
+                # raw {{placeholders}} ever reach a customer.
+                render_ctx = _business_render_context(db, business_id=business_id)
+                render_ctx.update({**context, **params.get("variables", {})})
+                if render_ctx.get("display_name") and not render_ctx.get("name"):
+                    render_ctx["name"] = render_ctx["display_name"]
+                body = comms.render_template(tpl.body, render_ctx)
+        if not body:
+            body = (
+                f"Update from your business regarding "
+                f"{context.get('event_type', 'your request')}."
+            )
+        # Retry-safety (§18): an execution sends at most once. If a previous
+        # attempt already produced the message (provider may have accepted it
+        # even when the response was lost), return it — never re-send, and
+        # never re-invoke Gemini for an already-sent message.
+        if execution_id is not None:
+            prior = brepo.get_message_by_automation(
+                db, business_id=business_id, automation_id=execution_id
+            )
+            if prior is not None:
+                return {
+                    "message_id": str(prior.id),
+                    "provider": str(getattr(prior, "provider", "")),
+                    "provider_message_id": str(
+                        getattr(prior, "provider_message_id", "") or ""
+                    ),
+                    "provider_mode": (
+                        "LIVE"
+                        if str(getattr(prior, "provider", "")) == "whatsapp"
+                        else "MOCK"
+                    ),
+                    "delivery_status": "deduplicated (already sent)",
+                    "ai_personalized": False,
+                }
+        # Prompt 7: optional Gemini personalization. The backend already
+        # decided eligibility and content inputs; Gemini only drafts the
+        # wording. Failures fall back to the deterministic template above
+        # (never claimed as AI-generated).
+        ai_used = False
+        if params.get("use_ai"):
+            try:
+                from app.services import growth_engine as _growth
+
+                body, ai_used = _growth.personalize_message(
+                    db,
+                    settings,
+                    business_id=business_id,
+                    kind=str(params.get("ai_kind", template_code or "followup")),
+                    fallback_body=body,
+                    context=context,
                 )
-        msg = comms.send_message(
+            except Exception:  # noqa: BLE001 - personalization never breaks sends
+                ai_used = False
+        try:
+            msg = comms.send_message(
+                db,
+                settings,
+                business_id=business_id,
+                channel=channel,
+                to=to,
+                body=body,
+                template_code=template_code,
+                automation_id=execution_id,
+            )
+        except ValueError as exc:
+            if OPT_OUT_MARKER in str(exc):
+                _audit(
+                    db,
+                    business_id=business_id,
+                    action="communication.skipped",
+                    meta={"reason": "opted_out", "channel": channel},
+                    actor_user_id=actor_user_id,
+                )
+                raise _SkippedAction(
+                    f"suppressed: recipient opted out of {channel}"
+                ) from exc
+            raise
+        except Exception as exc:
+            _audit(
+                db,
+                business_id=business_id,
+                action="communication.failed",
+                meta={"channel": channel, "error": str(exc)[:200]},
+                actor_user_id=actor_user_id,
+            )
+            raise
+        _audit(
             db,
-            settings,
             business_id=business_id,
-            channel=channel,
-            to=to,
-            body=body
-            or f"Update from your business regarding {context.get('event_type', 'your request')}.",
-            template_code=template_code,
-            automation_id=None,
+            action="communication.sent",
+            meta={
+                "channel": channel,
+                "provider": str(getattr(msg, "provider", ""))[:32],
+                "ai_personalized": ai_used,
+            },
+            actor_user_id=actor_user_id,
         )
-        return {"message_id": str(msg.id)}
+        return {
+            "message_id": str(msg.id),
+            "provider": str(getattr(msg, "provider", "")),
+            "provider_message_id": str(getattr(msg, "provider_message_id", "") or ""),
+            "provider_mode": (
+                "LIVE" if str(getattr(msg, "provider", "")) == "whatsapp" else "MOCK"
+            ),
+            "delivery_status": "simulated (not_delivered)"
+            if str(getattr(msg, "provider", "")) != "whatsapp"
+            else "sent (provider accepted; delivery via webhook)",
+            "ai_personalized": ai_used,
+        }
     if action_type == "create_task":
         from app.services import tasks as tasks_service
 
@@ -329,31 +742,36 @@ def _run_action(
     if action_type == "schedule_followup":
         # Durable delayed execution: a pending execution row the scheduler picks up.
         due_hours = int(params.get("due_hours", 24))
-        brepo.create_execution(
-            db,
+        fu_idem = _idem_key(
             business_id=business_id,
-            fields={
-                "rule_id": rule.id,
-                "event_id": getattr(event, "id", None),
-                "event_type": "scheduled.followup",
-                "status": "pending",
-                "attempt_count": 0,
-                "idempotency_key": _idem_key(
-                    business_id=business_id,
-                    rule_id=f"{rule.id}-fu",
-                    event_id=getattr(event, "id", ""),
-                    action_idx=int(params.get("slot", 1)),
-                ),
-                "correlation_id": str(getattr(event, "id", ""))[:64],
-                "input_payload": {
-                    "action": {"type": "send_message", **params},
-                    "context": context,
-                },
-                "scheduled_at": _utcnow() + timedelta(hours=due_hours),
-            },
+            rule_id=f"{rule.id}-fu",
+            event_id=getattr(event, "id", ""),
+            action_idx=int(params.get("slot", 1)),
         )
-        db.flush()
-        return {"scheduled_in_hours": due_hours}
+        if (
+            brepo.get_execution_by_idem(db, business_id=business_id, idem=fu_idem)
+            is None
+        ):
+            brepo.create_execution(
+                db,
+                business_id=business_id,
+                fields={
+                    "rule_id": rule.id,
+                    "event_id": getattr(event, "id", None),
+                    "event_type": "scheduled.followup",
+                    "status": "queued",
+                    "attempt_count": 0,
+                    "idempotency_key": fu_idem,
+                    "correlation_id": str(getattr(event, "id", ""))[:64],
+                    "input_payload": {
+                        "action": {"type": "send_message", **params},
+                        "context": context,
+                    },
+                    "scheduled_at": _utcnow() + timedelta(hours=due_hours),
+                },
+            )
+            db.flush()
+        return {"scheduled_in_hours": due_hours, "deduplicated": True}
     if action_type == "request_review":
         brepo.create_recommendation(
             db,
@@ -381,14 +799,25 @@ def _run_action(
     if action_type == "escalate":
         from app.services import tasks as tasks_service
 
+        summary = str(params.get("handoff_summary", ""))[:2000]
+        description = str(params.get("description", "Automation escalation."))[:2000]
+        if summary:
+            description = f"{description}\n\nHandoff summary:\n{summary}"
         task = tasks_service.create_task(
             db,
             business_id=business_id,
             title=str(params.get("title", f"Escalation: {rule.name}")),
-            description=str(params.get("description", "Automation escalation."))[:2000],
+            description=description,
             priority="high",
         )
-        return {"task_id": str(task.id)}
+        _audit(
+            db,
+            business_id=business_id,
+            action="handoff.created",
+            meta={"task": str(task.id)[:36], "rule": str(rule.name)[:120]},
+            actor_user_id=actor_user_id,
+        )
+        return {"task_id": str(task.id), "handoff": bool(summary)}
     if action_type == "ai_recommendation":
         brepo.create_recommendation(
             db,
@@ -497,6 +926,268 @@ DEFAULT_RULES: list[dict] = [
         "actions": [{"type": "request_review", "params": {}}],
         "config": {},
     },
+    # -- Prompt 7 growth + retention rules (generic: terminology, plans,
+    # -- timing, and templates resolve per business from configuration) --
+    {
+        "name": "Trial booked -> confirm + reminder",
+        "event_type": "trial.booked",
+        "conditions": {},
+        "actions": [
+            {
+                "type": "send_message",
+                "params": {
+                    "template_code": "trial_confirm",
+                    "channel": "whatsapp",
+                    "use_ai": True,
+                    "ai_kind": "trial_confirm",
+                },
+            },
+            {
+                "type": "schedule_followup",
+                "params": {
+                    "due_hours": 20,
+                    "slot": 1,
+                    "template_code": "booking_reminder",
+                    "channel": "whatsapp",
+                },
+            },
+        ],
+        "config": {"max_retries": 3},
+    },
+    {
+        "name": "Visit booked -> confirm + reminder",
+        "event_type": "visit.booked",
+        "conditions": {},
+        "actions": [
+            {
+                "type": "send_message",
+                "params": {
+                    "template_code": "trial_confirm",
+                    "channel": "whatsapp",
+                    "use_ai": True,
+                    "ai_kind": "visit_confirm",
+                },
+            },
+            {
+                "type": "schedule_followup",
+                "params": {
+                    "due_hours": 20,
+                    "slot": 1,
+                    "template_code": "booking_reminder",
+                    "channel": "whatsapp",
+                },
+            },
+        ],
+        "config": {"max_retries": 3},
+    },
+    {
+        "name": "Trial no-show -> reschedule follow-up",
+        "event_type": "trial.no_show",
+        "conditions": {},
+        "actions": [
+            {
+                "type": "send_message",
+                "params": {
+                    "template_code": "trial_noshow",
+                    "channel": "whatsapp",
+                    "use_ai": True,
+                    "ai_kind": "trial_noshow",
+                },
+            },
+            {
+                "type": "create_task",
+                "params": {
+                    "title": "Reschedule missed trial/visit",
+                    "priority": "high",
+                },
+            },
+        ],
+        "config": {"max_retries": 3},
+    },
+    {
+        "name": "Visit no-show -> reschedule follow-up",
+        "event_type": "visit.no_show",
+        "conditions": {},
+        "actions": [
+            {
+                "type": "send_message",
+                "params": {
+                    "template_code": "trial_noshow",
+                    "channel": "whatsapp",
+                    "use_ai": True,
+                    "ai_kind": "visit_noshow",
+                },
+            },
+            {
+                "type": "create_task",
+                "params": {
+                    "title": "Reschedule missed trial/visit",
+                    "priority": "high",
+                },
+            },
+        ],
+        "config": {"max_retries": 3},
+    },
+    {
+        "name": "Membership expiring -> renewal reminder",
+        "event_type": "membership.expiring",
+        "conditions": {},
+        "actions": [
+            {
+                "type": "send_message",
+                "params": {
+                    "template_code": "renewal_reminder",
+                    "channel": "whatsapp",
+                    "use_ai": True,
+                    "ai_kind": "renewal_reminder",
+                },
+            }
+        ],
+        "config": {"max_retries": 3},
+    },
+    {
+        "name": "Membership expired -> win-back follow-up",
+        "event_type": "membership.expired",
+        "conditions": {},
+        "actions": [
+            {
+                "type": "send_message",
+                "params": {
+                    "template_code": "expiry_notice",
+                    "channel": "whatsapp",
+                    "use_ai": True,
+                    "ai_kind": "expiry_notice",
+                },
+            },
+            {
+                "type": "create_task",
+                "params": {
+                    "title": "Win back expired membership",
+                    "priority": "medium",
+                },
+            },
+        ],
+        "config": {"max_retries": 3},
+    },
+    {
+        "name": "Inactive member -> retention",
+        "event_type": "customer.inactive",
+        "conditions": {},
+        "actions": [
+            {
+                "type": "send_message",
+                "params": {
+                    "template_code": "retention_winback",
+                    "channel": "whatsapp",
+                    "use_ai": True,
+                    "ai_kind": "retention_winback",
+                },
+            },
+            {
+                "type": "create_task",
+                "params": {
+                    "title": "Re-engage inactive member",
+                    "priority": "medium",
+                },
+            },
+        ],
+        "config": {"max_retries": 3},
+    },
+    {
+        "name": "Inactive member (member signal) -> retention",
+        "event_type": "member.inactive",
+        "conditions": {},
+        "actions": [
+            {
+                "type": "send_message",
+                "params": {
+                    "template_code": "retention_winback",
+                    "channel": "whatsapp",
+                    "use_ai": True,
+                    "ai_kind": "retention_winback",
+                },
+            },
+            {
+                "type": "create_task",
+                "params": {
+                    "title": "Re-engage inactive member",
+                    "priority": "medium",
+                },
+            },
+        ],
+        "config": {"max_retries": 3},
+    },
+    {
+        "name": "Payment success -> confirmation",
+        "event_type": "payment.success",
+        "conditions": {},
+        "actions": [
+            {
+                "type": "send_message",
+                "params": {
+                    "template_code": "payment_confirm",
+                    "channel": "whatsapp",
+                },
+            }
+        ],
+        "config": {"max_retries": 3},
+    },
+    {
+        "name": "Payment paid -> confirmation",
+        "event_type": "payment.paid",
+        "conditions": {},
+        "actions": [
+            {
+                "type": "send_message",
+                "params": {
+                    "template_code": "payment_confirm",
+                    "channel": "whatsapp",
+                },
+            }
+        ],
+        "config": {"max_retries": 3},
+    },
+    {
+        "name": "Payment failed -> recovery",
+        "event_type": "payment.failed",
+        "conditions": {},
+        "actions": [
+            {
+                "type": "send_message",
+                "params": {
+                    "template_code": "payment_recovery",
+                    "channel": "whatsapp",
+                    "use_ai": True,
+                    "ai_kind": "payment_recovery",
+                },
+            },
+            {
+                "type": "create_task",
+                "params": {
+                    "title": "Recover failed payment",
+                    "priority": "high",
+                },
+            },
+        ],
+        "config": {"max_retries": 3},
+    },
+    {
+        "name": "Seat continuity -> renewal reminder",
+        "event_type": "seat.continuity_due",
+        "conditions": {},
+        "actions": [
+            {
+                "type": "send_message",
+                "params": {
+                    "template_code": "seat_continuity",
+                    "channel": "whatsapp",
+                    "use_ai": True,
+                    "ai_kind": "seat_continuity",
+                },
+            }
+        ],
+        "config": {"max_retries": 3},
+    },
 ]
 
 
@@ -529,11 +1220,20 @@ def ensure_default_rules(
 def retry_due(
     db: Session, settings: Settings, *, business_id: uuid.UUID, limit: int = 50
 ) -> int:
-    """Scheduler entrypoint: rerun retrying/pending-due executions (bounded).
+    """Worker entrypoint: genuinely execute due queued/retrying executions.
 
     ``business_id`` is REQUIRED — cross-tenant replay is never allowed.
     Callers must pass the authenticated business (see
     ``POST /automation/scheduler/run``); there is no global sweep mode.
+
+    Each due row re-runs its stored action (``input_payload.action`` with
+    ``input_payload.context``) with bounded attempts and backoff:
+    - success -> completed (with provider/message refs in output)
+    - opt-out/ineligible -> skipped (terminal, recorded reason, no retry)
+    - retryable failure under budget -> retrying (scheduled +15min backoff)
+    - budget exhausted -> failed (observable, terminal)
+    - rows whose rule vanished execute from the stored payload (the payload
+      is the contract; the rule row only supplies retry budget).
     """
     from sqlalchemy import select as _select
     from app.models.automation import AutomationExecution
@@ -541,7 +1241,9 @@ def retry_due(
 
     stmt = _scope(
         _select(AutomationExecution)
-        .where(AutomationExecution.status.in_(("retrying", "pending")))
+        .where(
+            AutomationExecution.status.in_(("retrying", "pending", "queued", "running"))
+        )
         .order_by(AutomationExecution.created_at.asc())
         .limit(limit),
         AutomationExecution,
@@ -551,7 +1253,7 @@ def retry_due(
     ran = 0
     now = _utcnow()
     for row in rows:
-        if row.status == "pending" and row.scheduled_at is not None:
+        if row.status in ("pending", "queued") and row.scheduled_at is not None:
             sched = row.scheduled_at
             if sched.tzinfo is None:
                 from datetime import timezone as _tz
@@ -559,15 +1261,128 @@ def retry_due(
                 sched = sched.replace(tzinfo=_tz.utc)
             if sched > now:
                 continue
+        if row.status == "running":
+            # A stale running row (crashed worker, no heartbeat): reclaim it
+            # only when it started over 30 minutes ago; fresh running rows
+            # belong to an in-flight synchronous dispatch.
+            started = row.started_at
+            if started is not None:
+                if started.tzinfo is None:
+                    from datetime import timezone as _tz
+
+                    started = started.replace(tzinfo=_tz.utc)
+                if (now - started) < timedelta(minutes=30):
+                    continue
         if int(row.attempt_count or 0) >= int(row.max_attempts or 5):
             row.status = "failed"
             row.completed_at = now
+            row.error = (row.error or "")[:2000] or "retry budget exhausted"
+            _audit(
+                db,
+                business_id=business_id,
+                action="automation.failed",
+                meta={"execution": str(row.id)[:36], "reason": "budget_exhausted"},
+            )
             continue
-        # Re-execute as webhook_log (safe replay; original action payload preserved).
+        stored = dict(row.input_payload or {})
+        action = dict(stored.get("action") or {})
+        context = dict(stored.get("context") or {})
+        if not action or str(action.get("type", "")) not in AUTOMATION_ACTION_TYPES:
+            row.status = "failed"
+            row.error = "stored action is unknown; cannot replay safely"
+            row.completed_at = now
+            continue
+        # Resolve the rule for naming/retry config only; the stored action
+        # payload remains authoritative (rule edits never rewrite history).
+        rule = _rule_for_execution(db, business_id=business_id, execution=row)
         row.attempt_count = int(row.attempt_count or 0) + 1
-        row.status = "succeeded"
-        row.completed_at = now
-        row.output_payload = {"replayed": True}
-        ran += 1
-    db.flush()
+        row.status = "running"
+        row.started_at = now
+        db.flush()
+        try:
+            output = _run_action(
+                db,
+                settings,
+                business_id=business_id,
+                action=action,
+                context=context,
+                rule=rule,
+                event=_event_stub(row),
+                execution_id=row.id,
+            )
+            row.status = "completed"
+            row.output_payload = output
+            row.error = ""
+            row.completed_at = _utcnow()
+            _audit(
+                db,
+                business_id=business_id,
+                action="automation.completed",
+                meta={"execution": str(row.id)[:36]},
+            )
+            ran += 1
+        except _SkippedAction as skipped:
+            row.status = "skipped"
+            row.error = str(skipped)[:2000]
+            row.completed_at = _utcnow()
+            _audit(
+                db,
+                business_id=business_id,
+                action="automation.skipped",
+                meta={"execution": str(row.id)[:36], "reason": str(skipped)[:300]},
+            )
+            ran += 1
+        except Exception as exc:  # noqa: BLE001 - bounded retry, never raised
+            row.error = str(exc)[:2000]
+            if int(row.attempt_count or 1) >= int(row.max_attempts or 5):
+                row.status = "failed"
+                row.completed_at = _utcnow()
+                _audit(
+                    db,
+                    business_id=business_id,
+                    action="automation.failed",
+                    meta={"execution": str(row.id)[:36], "error": str(exc)[:300]},
+                )
+            else:
+                row.status = "retrying"
+                row.scheduled_at = _utcnow() + timedelta(
+                    minutes=15 * int(row.attempt_count or 1)
+                )
+        db.flush()
     return ran
+
+
+class _NullRule:
+    """Stand-in when the rule row was deleted (stored payload still executes)."""
+
+    id = None
+    name = "(deleted rule)"
+    config = {}
+
+
+def _rule_for_execution(db: Session, *, business_id, execution):
+    from sqlalchemy import select as _select
+    from app.models.automation import AutomationRule
+    from app.repositories.base import apply_business_scope as _scope
+
+    if execution.rule_id is None:
+        return _NullRule()
+    stmt = _scope(_select(AutomationRule), AutomationRule, business_id).where(
+        AutomationRule.id == execution.rule_id
+    )
+    row = db.execute(stmt).scalars().first()
+    return row if row is not None else _NullRule()
+
+
+class _EventStub:
+    """Minimal event shape for replays (entity refs carried in context)."""
+
+    def __init__(self, execution) -> None:
+        self.id = execution.event_id
+        self.entity_id = None
+        self.entity_type = None
+        self.event_type = execution.event_type
+
+
+def _event_stub(execution) -> _EventStub:
+    return _EventStub(execution)
