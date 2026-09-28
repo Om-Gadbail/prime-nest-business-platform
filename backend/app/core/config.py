@@ -83,6 +83,14 @@ class Settings(BaseSettings):
     owner_seed_password: str = Field(default="OwnerDemo123!", max_length=128)
     seed_platform_owner: bool = Field(default=True)
 
+    # --- Development staff seed (non-production only) ---
+    # Restricted single-business STAFF identities for local dashboard
+    # verification (Prime Staff :5175, Nest Staff :5176). Same demo-password
+    # convention as the owner seed. NEVER seeded when APP_ENV=production
+    # (see seed service) — production staff are invited, never seeded.
+    staff_seed_password: str = Field(default="StaffDemo123!", max_length=128)
+    seed_dev_staff: bool = Field(default=True)
+
     # NoDecode: accept comma-separated "http://a,http://b" from env as-is;
     # the validator below splits it (otherwise pydantic-settings tries JSON).
     # Exact origins only — never "*". Dev fallback (localhost) is applied in

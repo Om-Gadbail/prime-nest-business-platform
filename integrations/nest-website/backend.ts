@@ -104,8 +104,11 @@ type EnvRecord = Record<string, string | undefined> | undefined;
 
 function readEnv(): EnvRecord {
   try {
-    const meta = import.meta as unknown as { env?: EnvRecord };
-    return meta.env;
+    // NOTE: access import.meta.env DIRECTLY (never via an alias variable).
+    // Vite statically replaces the `import.meta.env` member expression at
+    // build/dev-transform time; reading it through `const meta = import.meta`
+    // defeats that replacement and the browser always sees an empty env.
+    return (import.meta.env ?? undefined) as EnvRecord;
   } catch {
     return undefined;
   }

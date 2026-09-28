@@ -92,6 +92,22 @@ Prime site `prime`, Nest site `nest`, staff dashboards
 `prime-fitness-001` / `nest-library-001` via `VITE_BUSINESS_ID`
 (memberships resolve server-side).
 
+## Local staff test identities (dev seed, never production)
+
+Seeded automatically by the worker/scheduler on non-production startup
+(`SEED_DEV_STAFF=true`; skipped entirely when `APP_ENV=production`):
+
+| Identity | Business | Role |
+|---|---|---|
+| `staff@primefitness.in` | Prime only (`prime-fitness-001`) | STAFF |
+| `staff@nestlibrary.in` | Nest only (`nest-library-001`) | STAFF |
+
+Demo password convention: `STAFF_SEED_PASSWORD` (default `StaffDemo123!`,
+override via env like the owner seed). Both are STAFF, never OWNER; each
+sees exactly one business (`/auth/businesses` returns one entry) and
+cross-business `switch-business` is denied with 403. The unified owner
+(`owner@prime-nest-dashboard.com`) is unchanged with OWNER in both.
+
 ## Warnings
 
 - NEVER change Docker internal ports (`db:5432`, `redis:6379`).

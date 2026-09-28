@@ -138,7 +138,9 @@ def ensure_businesses(db: Session) -> list[Business]:
     return [prime, nest]
 
 
-def seed_development(db: Session, *, include_owner: bool = True) -> dict[str, object]:
+def seed_development(
+    db: Session, *, include_owner: bool = True, include_staff: bool = True
+) -> dict[str, object]:
     """Idempotent seed entrypoint. Commits once at the end."""
     rbac = ensure_rbac(db)
     businesses = ensure_businesses(db)
@@ -146,12 +148,108 @@ def seed_development(db: Session, *, include_owner: bool = True) -> dict[str, ob
     owner = None
     if include_owner:
         owner = ensure_platform_owner(db, businesses=businesses)
+    staff: dict[str, object] = {}
+    if include_staff:
+        staff = ensure_dev_staff(db, businesses=businesses)
     db.commit()
-    return {"businesses": businesses, "owner": owner, **rbac}
+    return {"businesses": businesses, "owner": owner, "staff": staff, **rbac}
 
 
 OWNER_SEED_EMAIL = "owner@prime-nest-dashboard.com"
 OWNER_SEED_PASSWORD_DEMO = "OwnerDemo123!"
+
+# Development-only staff identities (local dashboard verification).
+# Restricted STAFF memberships: exactly one business each, never OWNER.
+PRIME_STAFF_SEED_EMAIL = "staff@primefitness.in"
+NEST_STAFF_SEED_EMAIL = "staff@nestlibrary.in"
+STAFF_SEED_PASSWORD_DEMO = "StaffDemo123!"
+
+
+def ensure_dev_staff(
+    db: Session,
+    *,
+    businesses: list[Business] | None = None,
+    password: str | None = None,
+) -> dict[str, object]:
+    """Ensure restricted single-business STAFF test identities (idempotent).
+
+    Prime staff -> ``prime`` membership only; Nest staff -> ``nest``
+    membership only; both with the STAFF system role (never OWNER).
+    Running twice never duplicates users, credentials, or memberships;
+    existing memberships keep their role (never escalated here).
+
+    Safety: returns immediately when ``APP_ENV=production`` (dev
+    identities must never exist in production) or when
+    ``SEED_DEV_STAFF=false``. Credentials follow the owner-seed
+    convention: ``STAFF_SEED_PASSWORD`` env wins, else the configured
+    ``staff_seed_password`` (demo default, refused in production).
+    Only the Argon2id hash is persisted; plaintext never touches the DB.
+    """
+    import os as _os
+
+    from app.core import security as _security
+    from app.repositories import users as _users
+
+    from app.core.config import get_settings as _get_settings
+
+    settings = _get_settings()
+    if settings.is_production:
+        return {}
+    if not settings.seed_dev_staff:
+        return {}
+    raw_password = (
+        password
+        or _os.environ.get("STAFF_SEED_PASSWORD")
+        or settings.staff_seed_password
+    )
+    if len(raw_password) < 10 or len(raw_password) > 128:
+        raise ValueError("Staff seed password must be 10-128 characters.")
+
+    targets = list(businesses) if businesses is not None else ensure_businesses(db)
+    by_slug = {b.slug: b for b in targets}
+    staff_role = membership_repo.get_role_by_name(db, name="STAFF")
+    assert staff_role is not None, "RBAC seed must run before staff seed"
+    specs = (
+        (PRIME_STAFF_SEED_EMAIL, "Prime Staff", "prime"),
+        (NEST_STAFF_SEED_EMAIL, "Nest Staff", "nest"),
+    )
+    created: dict[str, object] = {}
+    for email, full_name, slug in specs:
+        business = by_slug.get(slug)
+        if business is None:
+            continue
+        user = _users.get_by_email(db, email)
+        if user is None:
+            user = _users.create(
+                db,
+                email=email,
+                password_hash=_security.hash_password(raw_password),
+                full_name=full_name,
+                is_active=True,
+                is_verified=True,
+            )
+            db.flush()
+        membership = membership_repo.get_membership(
+            db, user_id=user.id, business_id=business.id
+        )
+        if membership is None:
+            membership_repo.create_membership(
+                db,
+                user_id=user.id,
+                business_id=business.id,
+                role_id=staff_role.id,
+                status="active",
+                is_default=True,
+            )
+        else:
+            # Heal status/defaults on re-run; NEVER escalate the role here.
+            if membership.status != "active":
+                membership.status = "active"
+            if not membership.is_default:
+                membership.is_default = True
+        db.flush()
+        created[slug] = user
+    return created
 
 
 def ensure_platform_owner(
