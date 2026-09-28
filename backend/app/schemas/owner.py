@@ -119,3 +119,91 @@ class CombinedOverview(BaseModel):
     scope: str
     totals: dict = Field(default_factory=dict)
     businesses: list[CombinedBusinessItem] = Field(default_factory=list)
+
+
+class OwnerAlertItem(BaseModel):
+    severity: str = Field(description="critical | warning | info")
+    business: dict = Field(default_factory=dict)
+    category: str = Field(
+        description="finance | membership | leads | attendance | automation"
+    )
+    title: str
+    detail: str = ""
+    count: int = 0
+    observed_at: datetime
+    drill: str = Field(
+        description="Owner UI section hint: payments | renewals | members | leads | automation"
+    )
+
+
+class OwnerAlertsReport(BaseModel):
+    generated_at: datetime
+    scope: str
+    combined: bool = False
+    window: dict = Field(default_factory=dict)
+    rules: dict = Field(default_factory=dict)
+    total: int = 0
+    alerts: list[OwnerAlertItem] = Field(default_factory=list)
+
+
+class OwnerScopeBusiness(BaseModel):
+    business: BusinessRef
+    metrics: dict = Field(default_factory=dict)
+
+
+class OwnerGrowthReport(BaseModel):
+    generated_at: datetime
+    scope: str
+    combined: bool = False
+    window: dict = Field(default_factory=dict)
+    businesses: list[OwnerScopeBusiness] = Field(default_factory=list)
+
+
+class OwnerRenewalsItem(BaseModel):
+    business: BusinessRef
+    buckets: dict = Field(default_factory=dict)
+
+
+class OwnerRenewalsReport(BaseModel):
+    generated_at: datetime
+    scope: str
+    combined: bool = False
+    businesses: list[OwnerRenewalsItem] = Field(default_factory=list)
+
+
+class OwnerPaymentsItem(BaseModel):
+    business: BusinessRef
+    health: dict = Field(default_factory=dict)
+
+
+class OwnerPaymentsReport(BaseModel):
+    generated_at: datetime
+    scope: str
+    combined: bool = False
+    window: dict = Field(default_factory=dict)
+    businesses: list[OwnerPaymentsItem] = Field(default_factory=list)
+
+
+class OwnerAttendanceItem(BaseModel):
+    business: BusinessRef
+    attendance: dict = Field(default_factory=dict)
+
+
+class OwnerAttendanceReport(BaseModel):
+    generated_at: datetime
+    scope: str
+    combined: bool = False
+    window: dict = Field(default_factory=dict)
+    businesses: list[OwnerAttendanceItem] = Field(default_factory=list)
+
+
+class OwnerAutomationItem(BaseModel):
+    business: BusinessRef
+    health: dict = Field(default_factory=dict)
+
+
+class OwnerAutomationReport(BaseModel):
+    generated_at: datetime
+    scope: str
+    combined: bool = False
+    businesses: list[OwnerAutomationItem] = Field(default_factory=list)

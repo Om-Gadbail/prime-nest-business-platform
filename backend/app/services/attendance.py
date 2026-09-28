@@ -24,9 +24,28 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _parse_day(value: object) -> date:
+def _business_today(db: Session, business_id: uuid.UUID) -> date:
+    """Business-local "today" for attendance dating.
+
+    Check-ins without an explicit date belong to the business's calendar
+    day, not UTC — otherwise visits near midnight land on the wrong day in
+    owner/staff "today" views (which aggregate in business TZ).
+    """
+    try:
+        from zoneinfo import ZoneInfo
+
+        from app.repositories import businesses as business_repo
+
+        biz = business_repo.get_by_id(db, business_id)
+        tz = ZoneInfo(str(getattr(biz, "timezone", None) or "UTC"))
+    except Exception:  # noqa: BLE001 - fall back to UTC on bad config
+        tz = timezone.utc
+    return datetime.now(tz).date()
+
+
+def _parse_day(value: object, today: date | None = None) -> date:
     if value in (None, ""):
-        return _utcnow().date()
+        return today or _utcnow().date()
     if isinstance(value, datetime):
         return value.date()
     if isinstance(value, date):
@@ -66,8 +85,8 @@ def check_in(
     member = members_repo.get(db, member_id=member_uuid, business_id=business_id)
     if member is None:
         raise NotFoundError("Member not found.")
-    day = _parse_day(data.get("attendance_date"))
-    if day > _utcnow().date():
+    day = _parse_day(data.get("attendance_date"), _business_today(db, business_id))
+    if day > _business_today(db, business_id):
         raise ValueError("attendance_date must not be in the future.")
     source = _validate_enum(
         data.get("source", "manual"),

@@ -252,12 +252,18 @@ class TestOpenAPIContract:
         # Frozen contract surface (Prompt 1: 160 routes incl. ops/docs;
         # Prompt 5: +4 paths/+4 ops — renewals/{id}/status, payments/webhook,
         # domain-events, members/{id}/timeline).
-        assert len(paths) == 129, len(paths)
-        assert operations == 160, operations
+        # Prompt 6: +6 paths/+6 ops — owner alerts, growth, renewals,
+        # payments, attendance, automation-health.
+        assert len(paths) == 135, len(paths)
+        assert operations == 166, operations
         # Anchors every frontend needs.
         for anchor in ("/api/v1/auth/login", "/api/v1/auth/switch-business",
                        "/api/v1/auth/businesses", "/api/v1/owner/combined",
-                       "/api/v1/owner/overview", "/api/v1/public/{slug}/leads",
+                       "/api/v1/owner/overview", "/api/v1/owner/alerts",
+                       "/api/v1/owner/growth", "/api/v1/owner/renewals",
+                       "/api/v1/owner/payments", "/api/v1/owner/attendance",
+                       "/api/v1/owner/automation-health",
+                       "/api/v1/public/{slug}/leads",
                        "/api/v1/public/{slug}/bookings", "/api/v1/leads"):
             assert anchor in paths, anchor
         # No duplicate operation IDs; security schemes declared.
