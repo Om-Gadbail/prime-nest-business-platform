@@ -1,95 +1,124 @@
-"""WhatsApp webhook + send APIs (Block 9 step 44).
+"""WhatsApp webhook + send APIs (Block 9 step 44; Pre-Prompt-7 foundation).
 
-GET  /whatsapp/webhook?hub.mode=subscribe&hub.verify_token=...&hub.challenge=...
-POST /whatsapp/webhook  (inbound + status updates; signature-verified)
-POST /whatsapp/send     (staff-authenticated outbound)
+Routes:
+GET  /whatsapp/webhook                 Meta verification (any business token)
+GET  /whatsapp/webhook/{business_key}  Meta verification PINNED to one business
+POST /whatsapp/webhook                 Inbound + status (business resolved
+                                       from credential-bound phone_number_id)
+POST /whatsapp/webhook/{business_key}  Inbound PINNED to one business
+POST /whatsapp/send                    Staff-authenticated outbound (own
+                                       business creds only, via BusinessContext)
+
+Isolation: each business has its OWN Meta app credentials (PRIME_WHATSAPP_*,
+NEST_WHATSAPP_*). Verification tokens and HMAC app secrets are checked
+per-business; a Prime context can never select Nest credentials. The
+``business_slug`` payload field is a DEMO/TEST override only and is IGNORED
+in production. No automated sends happen here (Prompt 7 owns automation).
 """
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Query, Request, Response
+import logging
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from sqlalchemy.orm import Session
 
 from app.api import deps
 from app.api.v1.endpoints._helpers import map_service_error
-from app.core.config import get_settings
+from app.core.config import Settings, get_settings
 from app.schemas.blocks812 import SendMessageIn
 from app.services import communications as comms
+from app.services import integration_configs as iconf
 from app.services.authorization import AuthenticatedContext
 from app.services.messaging import verify_whatsapp_signature
 from app.services import public as public_service
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/whatsapp", tags=["whatsapp"])
 
 
-@router.get("/webhook", summary="Meta webhook verification")
-def verify(
-    hub_mode: str = Query(default="", alias="hub.mode"),
-    hub_verify_token: str = Query(default="", alias="hub.verify_token"),
-    hub_challenge: str = Query(default="", alias="hub.challenge"),
-):
-    settings = get_settings()
-    expected = (settings.whatsapp_verify_token or "").strip()
-    if hub_mode == "subscribe" and expected and hub_verify_token == expected:
-        return Response(content=hub_challenge, media_type="text/plain")
-    # Demo mode (no verify token configured): echo challenge for local testing.
-    # Production fails closed — an unconfigured webhook never verifies.
-    if settings.is_production:
-        from fastapi import HTTPException, status
+# -- verification helpers ------------------------------------------------------
 
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN, detail="Webhook verification failed."
-        )
-    if hub_mode == "subscribe" and not expected and hub_challenge:
-        return Response(content=hub_challenge, media_type="text/plain")
-    from fastapi import HTTPException, status
 
-    raise HTTPException(
-        status_code=status.HTTP_403_FORBIDDEN, detail="Webhook verification failed."
+def _all_verify_tokens(settings: Settings) -> list[str]:
+    """Every configured verify token (business-scoped first, legacy last)."""
+    tokens = [t for t in iconf.verify_tokens(settings).values() if t]
+    legacy = (settings.whatsapp_verify_token or "").strip()
+    if legacy:
+        tokens.append(legacy)
+    return tokens
+
+
+def _check_verify_token(settings: Settings, provided: str) -> bool:
+    """True when ``provided`` matches ANY configured verify token."""
+    provided = (provided or "").strip()
+    if not provided:
+        return False
+    return any(provided == token for token in _all_verify_tokens(settings) if token)
+
+
+def _check_verify_token_for_business(
+    settings: Settings, business_key: str, provided: str
+) -> bool:
+    """True when ``provided`` matches ONLY that business's verify token."""
+    provided = (provided or "").strip()
+    if not provided:
+        return False
+    expected = iconf.verify_tokens(settings).get(business_key, "")
+    return bool(expected) and provided == expected
+
+
+def _request_id(request: Request | None) -> str:
+    if request is None:
+        return "-"
+    return str(getattr(getattr(request, "state", None), "request_id", "-") or "-")
+
+
+def _verify_signature_for_business(
+    settings: Settings, business_key: str, *, body: bytes, signature: str
+) -> bool:
+    """HMAC check against ONE business's app secret (fail closed when set).
+
+    When the business has no secret configured this returns True ONLY
+    outside production (demo/local webhook testing); production callers must
+    fail closed beforehand.
+    """
+    secret = iconf.app_secrets(settings).get(business_key, "")
+    if not secret:
+        return not settings.is_production
+    return verify_whatsapp_signature(app_secret=secret, body=body, signature=signature)
+
+
+def _verify_signature_any(settings: Settings, *, body: bytes, signature: str) -> bool:
+    """HMAC check against ANY configured app secret (unresolved business).
+
+    Accepts when at least one configured secret (business-scoped or legacy)
+    verifies. When NO secret is configured at all, accepts ONLY outside
+    production (demo mode); production fails closed beforehand.
+    """
+    candidates = [s for s in iconf.app_secrets(settings).values() if s]
+    legacy = (settings.whatsapp_app_secret or "").strip()
+    if legacy:
+        candidates.append(legacy)
+    if not candidates:
+        return not settings.is_production
+    return any(
+        verify_whatsapp_signature(app_secret=secret, body=body, signature=signature)
+        for secret in candidates
     )
 
 
-@router.post("/webhook", summary="WhatsApp inbound webhook")
-async def inbound(request: Request, db: Session = Depends(deps.get_db)):
-    settings = get_settings()
-    raw = await request.body()
-    signature = request.headers.get("X-Hub-Signature-256", "")
-    app_secret = settings.whatsapp_app_secret or ""
-    # Fail closed in production: an unconfigured app secret never accepts
-    # inbound webhooks (demo mode only outside production).
-    if settings.is_production and not app_secret.strip():
-        from fastapi import HTTPException, status
+def _resolve_business_for_payload(db: Session, settings: Settings, payload: dict):
+    """Server-side business resolution for an inbound payload.
 
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN, detail="Invalid webhook signature."
-        )
-    if not verify_whatsapp_signature(
-        app_secret=app_secret, body=raw, signature=signature
-    ):
-        from fastapi import HTTPException, status
-
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN, detail="Invalid webhook signature."
-        )
-    try:
-        payload = await request.json()
-    except Exception:  # noqa: BLE001 - vendor webhooks must never 500 on bad JSON
-        return {"received": True}
-    # Meta shape: entry[].changes[].value.{messages[], statuses[]}.
-    # Production business resolution: metadata.phone_number_id -> business via
-    # per-business operational config (business_settings.operational.whatsapp.
-    # phone_number_id) or WHATSAPP_PHONE_NUMBER_MAP. The `business_slug` field
-    # is a DEMO/TEST override only (never trusted in production).
-    slug = ""
-    if isinstance(payload, dict):
-        slug = str(payload.get("business_slug", "") or "")
-        entries = payload.get("entry", []) or []
-    else:
-        entries = []
-    business = None
-    phone_ids = comms.extract_phone_number_ids(
-        payload if isinstance(payload, dict) else {}
-    )
+    Signal: credential-bound ``metadata.phone_number_id`` values only (each
+    mapped through the business-scoped env sets first). Returns the Business
+    row or None (safe ack, no records). NEVER trusts ``business_id`` /
+    ``phone_number_id`` as authorization — only as a lookup into verified
+    registered configuration.
+    """
+    phone_ids = comms.extract_phone_number_ids(payload)
     for pid in phone_ids:
         try:
             business = comms.resolve_business_for_phone_number_id(
@@ -98,12 +127,21 @@ async def inbound(request: Request, db: Session = Depends(deps.get_db)):
         except Exception:  # noqa: BLE001 - resolution never breaks the ack
             business = None
         if business is not None:
-            break
-    if business is None and slug and not settings.is_production:
-        try:
-            business = public_service.resolve_public_business(db, slug=slug)
-        except Exception:  # noqa: BLE001 - unknown slug behaves as no-business
-            business = None
+            return business
+    return None
+
+
+def _process_inbound(
+    db: Session, settings: Settings, payload: dict, business=None
+) -> None:
+    """Persist inbound messages + delivery statuses for ONE business.
+
+    ``business`` None -> safe ack path (nothing created). Commits once;
+    any failure rolls back and still acks (webhooks must never 500).
+    """
+    if not isinstance(payload, dict):
+        return
+    entries = payload.get("entry", []) or []
     try:
         for entry in entries:
             for change in entry.get("changes", []) or []:
@@ -129,7 +167,7 @@ async def inbound(request: Request, db: Session = Depends(deps.get_db)):
                         )
                 for st in value.get("statuses", []) or []:
                     mid = str(st.get("id", ""))
-                    status = str(st.get("status", ""))
+                    status_value = str(st.get("status", ""))
                     if business is not None and mid:
                         from app.repositories import blocks812 as brepo
 
@@ -137,20 +175,208 @@ async def inbound(request: Request, db: Session = Depends(deps.get_db)):
                             db, business_id=business.id, provider_message_id=mid
                         )
                         if existing is not None:
-                            existing.status = status
+                            existing.status = status_value
                             brepo.record_delivery(
                                 db,
                                 business_id=business.id,
                                 fields={
                                     "message_id": existing.id,
                                     "provider_message_id": mid,
-                                    "status": status,
+                                    "status": status_value,
                                     "raw": {"webhook": True},
                                 },
                             )
         db.commit()
     except Exception:  # noqa: BLE001 - webhook processing must never 500; safe ack
         db.rollback()
+
+
+# -- verification endpoints ----------------------------------------------------
+
+
+@router.get("/webhook", summary="Meta webhook verification")
+def verify(
+    hub_mode: str = Query(default="", alias="hub.mode"),
+    hub_verify_token: str = Query(default="", alias="hub.verify_token"),
+    hub_challenge: str = Query(default="", alias="hub.challenge"),
+):
+    settings = get_settings()
+    if hub_mode == "subscribe" and hub_challenge:
+        if _check_verify_token(settings, hub_verify_token):
+            return Response(content=hub_challenge, media_type="text/plain")
+        # Demo mode (no verify token configured anywhere): echo challenge
+        # for local testing. Production fails closed.
+        if settings.is_production or _all_verify_tokens(settings):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Webhook verification failed.",
+            )
+        return Response(content=hub_challenge, media_type="text/plain")
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN, detail="Webhook verification failed."
+    )
+
+
+@router.get("/webhook/{business_key}", summary="Meta webhook verification (pinned)")
+def verify_for_business(
+    business_key: str,
+    hub_mode: str = Query(default="", alias="hub.mode"),
+    hub_verify_token: str = Query(default="", alias="hub.verify_token"),
+    hub_challenge: str = Query(default="", alias="hub.challenge"),
+):
+    """Verification PINNED to one business (two Meta apps -> two URLs).
+
+    Only ``<business_key>``'s OWN verify token is accepted here, so a Nest
+    verification challenge can never succeed against the Prime endpoint.
+    """
+    key = (business_key or "").strip().lower()
+    if key not in iconf.BUSINESS_KEYS:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Unknown business webhook."
+        )
+    settings = get_settings()
+    if (
+        hub_mode == "subscribe"
+        and hub_challenge
+        and _check_verify_token_for_business(settings, key, hub_verify_token)
+    ):
+        return Response(content=hub_challenge, media_type="text/plain")
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN, detail="Webhook verification failed."
+    )
+
+
+# -- inbound endpoints ---------------------------------------------------------
+
+
+@router.post("/webhook", summary="WhatsApp inbound webhook")
+async def inbound(request: Request, db: Session = Depends(deps.get_db)):
+    settings = get_settings()
+    rid = _request_id(request)
+    raw = await request.body()
+    signature = request.headers.get("X-Hub-Signature-256", "")
+    try:
+        payload = await request.json()
+    except Exception:  # noqa: BLE001 - vendor webhooks must never 500 on bad JSON
+        return {"received": True}
+    if not isinstance(payload, dict):
+        return {"received": True}
+
+    business = _resolve_business_for_payload(db, settings, payload)
+    if business is not None:
+        business_key = iconf.resolve_business_key(business)
+        if business_key and iconf.app_secrets(settings).get(business_key):
+            if not _verify_signature_for_business(
+                settings, business_key, body=raw, signature=signature
+            ):
+                logger.warning(
+                    "whatsapp webhook bad signature business=%s rid=%s",
+                    business_key,
+                    rid,
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Invalid webhook signature.",
+                )
+        elif settings.is_production and not (
+            iconf.app_secrets(settings).get(business_key or "")
+            or (settings.whatsapp_app_secret or "").strip()
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Invalid webhook signature.",
+            )
+        else:
+            # Unresolved-secret path: require ANY configured secret to verify
+            # (or demo mode outside production).
+            if not _verify_signature_any(settings, body=raw, signature=signature):
+                logger.warning("whatsapp webhook bad signature (any) rid=%s", rid)
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Invalid webhook signature.",
+                )
+    else:
+        # No business resolved: verify against any secret; demo `business_slug`
+        # override ONLY outside production (local testing, never trusted).
+        if not _verify_signature_any(settings, body=raw, signature=signature):
+            logger.warning("whatsapp webhook bad signature (no-biz) rid=%s", rid)
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Invalid webhook signature.",
+            )
+        slug = str(payload.get("business_slug", "") or "")
+        if slug and not settings.is_production:
+            try:
+                business = public_service.resolve_public_business(db, slug=slug)
+            except Exception:  # noqa: BLE001 - unknown slug -> no-business ack
+                business = None
+        if business is None:
+            logger.info("whatsapp webhook unmapped payload acked rid=%s", rid)
+    _process_inbound(db, settings, payload, business)
+    return {"received": True}
+
+
+@router.post("/webhook/{business_key}", summary="WhatsApp inbound webhook (pinned)")
+async def inbound_for_business(
+    business_key: str, request: Request, db: Session = Depends(deps.get_db)
+):
+    """Inbound PINNED to one business (two Meta apps -> two URLs).
+
+    The URL path (server configuration per Meta app) is the business signal;
+    the payload's phone_number_id is cross-checked when the business has a
+    configured number, and mismatches ack WITHOUT writes (no cross-tenant
+    records on misconfiguration). Signature is checked against ONLY that
+    business's app secret.
+    """
+    key = (business_key or "").strip().lower()
+    if key not in iconf.BUSINESS_KEYS:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Unknown business webhook."
+        )
+    settings = get_settings()
+    rid = _request_id(request)
+    raw = await request.body()
+    signature = request.headers.get("X-Hub-Signature-256", "")
+    if settings.is_production and not iconf.app_secrets(settings).get(key):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Invalid webhook signature.",
+        )
+    if not _verify_signature_for_business(settings, key, body=raw, signature=signature):
+        logger.warning(
+            "whatsapp pinned webhook bad signature business=%s rid=%s", key, rid
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Invalid webhook signature.",
+        )
+    try:
+        payload = await request.json()
+    except Exception:  # noqa: BLE001 - vendor webhooks must never 500 on bad JSON
+        return {"received": True}
+    if not isinstance(payload, dict):
+        return {"received": True}
+
+    from app.repositories import businesses as business_repo
+
+    business = business_repo.get_by_slug(db, key)
+    if business is None or not business.is_active or business.status != "active":
+        return {"received": True}
+    # Cross-check: when the business has a configured number and the payload
+    # carries phone ids, at least one must match — else ack without writes.
+    configured_pid = iconf.resolve_whatsapp_config(
+        settings, business
+    ).phone_number_id.strip()
+    if configured_pid:
+        phone_ids = comms.extract_phone_number_ids(payload)
+        if phone_ids and configured_pid not in phone_ids:
+            logger.warning(
+                "whatsapp pinned webhook phone mismatch business=%s rid=%s",
+                key,
+                rid,
+            )
+            return {"received": True}
+    _process_inbound(db, settings, payload, business)
     return {"received": True}
 
 
@@ -162,6 +388,12 @@ def staff_send(
         deps.require_permission("communications.manage")
     ),
 ):
+    """Staff outbound send using ONLY the staff member's OWN business creds.
+
+    The business comes from the server-side BusinessContext (JWT + DB
+    membership) — a forged ``business_id`` in the request can never select
+    another business's credentials.
+    """
     assert ctx.business is not None
     try:
         msg = comms.send_message(

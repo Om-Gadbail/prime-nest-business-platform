@@ -254,8 +254,10 @@ class TestOpenAPIContract:
         # domain-events, members/{id}/timeline).
         # Prompt 6: +6 paths/+6 ops — owner alerts, growth, renewals,
         # payments, attendance, automation-health.
-        assert len(paths) == 135, len(paths)
-        assert operations == 166, operations
+        # Pre-Prompt-7 foundation: +2 paths/+3 ops — integrations/status,
+        # whatsapp/webhook/{business_key} (GET verify + POST inbound, pinned).
+        assert len(paths) == 137, len(paths)
+        assert operations == 169, operations
         # Anchors every frontend needs.
         for anchor in ("/api/v1/auth/login", "/api/v1/auth/switch-business",
                        "/api/v1/auth/businesses", "/api/v1/owner/combined",
@@ -263,6 +265,9 @@ class TestOpenAPIContract:
                        "/api/v1/owner/growth", "/api/v1/owner/renewals",
                        "/api/v1/owner/payments", "/api/v1/owner/attendance",
                        "/api/v1/owner/automation-health",
+                       "/api/v1/integrations/status",
+                       "/api/v1/whatsapp/webhook",
+                       "/api/v1/whatsapp/webhook/{business_key}",
                        "/api/v1/public/{slug}/leads",
                        "/api/v1/public/{slug}/bookings", "/api/v1/leads"):
             assert anchor in paths, anchor

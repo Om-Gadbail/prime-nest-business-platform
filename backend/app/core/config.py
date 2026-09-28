@@ -146,8 +146,13 @@ class Settings(BaseSettings):
     # --- Blocks 8-12: Gemini AI gateway (provider-neutral, Block 10) ---
     # GEMINI_API_KEY lives ONLY in backend env; never exposed to frontend.
     # GEMINI_MODEL is configurable; prefer a current stable Flash-class model.
+    # NOTE (Pre-Prompt-7 foundation, verified Sep 2026): `gemini-2.0-flash`
+    # was shut down by Google (changelog: deprecated Jun 2026). The default
+    # is now `gemini-2.5-flash` (stable, v1beta generateContent, supports
+    # temperature + functionDeclarations like the gateway sends). Override
+    # via GEMINI_MODEL env for newer Flash models (3.x drops temperature).
     gemini_api_key: str = Field(default="")
-    gemini_model: str = Field(default="gemini-2.0-flash", max_length=128)
+    gemini_model: str = Field(default="gemini-2.5-flash", max_length=128)
     ai_max_output_tokens: int = Field(default=1024, ge=64, le=8192)
     ai_max_tool_calls: int = Field(default=6, ge=1, le=20)
     ai_public_chat_enabled: bool = Field(default=True)
@@ -155,12 +160,35 @@ class Settings(BaseSettings):
     ai_public_rate_window_seconds: int = Field(default=600, ge=60, le=86400)
 
     # --- Blocks 8-12: WhatsApp / messaging (provider-neutral, Block 9) ---
+    # LEGACY global single-number set (backwards compat only; new code MUST
+    # use the business-scoped PRIME_*/NEST_* sets below). A global credential
+    # architecture is NOT acceptable for Prime/Nest isolation — the legacy
+    # fields are only a demo fallback and never win over a business config.
     whatsapp_enabled: bool = Field(default=False)
     whatsapp_access_token: str = Field(default="")
     whatsapp_phone_number_id: str = Field(default="")
     whatsapp_business_account_id: str = Field(default="")
     whatsapp_verify_token: str = Field(default="")
     whatsapp_app_secret: str = Field(default="")
+
+    # --- Pre-Prompt-7: business-scoped WhatsApp Cloud API credentials ---
+    # TWO independent credential sets (one Meta app per business). The
+    # provider implementation is shared; ONLY the credentials differ and are
+    # resolved server-side from the authenticated BusinessContext (never from
+    # client input). Future businesses follow the same pattern (<SLUG>_ prefix).
+    # All values live ONLY in backend env (never VITE_*, never committed).
+    prime_whatsapp_enabled: bool = Field(default=False)
+    prime_whatsapp_access_token: str = Field(default="")
+    prime_whatsapp_phone_number_id: str = Field(default="")
+    prime_whatsapp_business_account_id: str = Field(default="")
+    prime_whatsapp_verify_token: str = Field(default="")
+    prime_whatsapp_app_secret: str = Field(default="")
+    nest_whatsapp_enabled: bool = Field(default=False)
+    nest_whatsapp_access_token: str = Field(default="")
+    nest_whatsapp_phone_number_id: str = Field(default="")
+    nest_whatsapp_business_account_id: str = Field(default="")
+    nest_whatsapp_verify_token: str = Field(default="")
+    nest_whatsapp_app_secret: str = Field(default="")
     # Production multi-number routing: "prime:12345,nest:67890" (slug:phone_id pairs).
     # Per-business operational config (business_settings.operational.whatsapp.phone_number_id)
     # wins over this map; the map wins over the single WHATSAPP_PHONE_NUMBER_ID fallback.

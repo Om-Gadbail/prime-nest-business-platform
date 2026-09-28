@@ -24,7 +24,7 @@ class GeminiStructuredProvider(AIProvider):
 
     def __init__(self) -> None:
         settings = get_settings()
-        self.model = (settings.gemini_model or "gemini-2.0-flash").strip()
+        self.model = (settings.gemini_model or "gemini-2.5-flash").strip()
         self._api_key = (settings.gemini_api_key or "").strip()
         self._timeout = int(settings.ai_timeout_seconds or 20)
 

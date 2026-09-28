@@ -24,7 +24,7 @@ Dashboards / websites / WhatsApp → backend AI runtime → AI Gateway → provi
 | `AI_ENABLED=false` | Kill switch → honest fallback, everything else keeps working |
 | `AI_PROVIDER=noop` | Fake provider (default): replies labeled demo, full flows testable |
 | `AI_PROVIDER=gemini` + `GEMINI_API_KEY` | Live path: REST `generateContent` + functionDeclarations |
-| `GEMINI_MODEL` | Configurable (default `gemini-2.0-flash`); temperature 0.4, bounded tokens |
+| `GEMINI_MODEL` | Configurable (default `gemini-2.5-flash`; `gemini-2.0-flash` was shut down Jun 2026); temperature 0.4, bounded tokens |
 | `AI_MAX_OUTPUT_TOKENS`, `AI_MAX_TOOL_CALLS`, `AI_TIMEOUT_SECONDS`, `AI_PUBLIC_CHAT_ENABLED` | Guardrails |
 
 Fake works with no credentials; production fails safely (fallback + escalation, never invented data).

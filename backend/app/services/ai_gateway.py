@@ -120,7 +120,7 @@ class GeminiChatProvider(ChatProvider):
 
     def __init__(self, settings: Settings) -> None:
         self._s = settings
-        self.model = (settings.gemini_model or "gemini-2.0-flash").strip()
+        self.model = (settings.gemini_model or "gemini-2.5-flash").strip()
 
     def chat(
         self,
@@ -302,6 +302,116 @@ def get_chat_provider(settings: Settings) -> ChatProvider:
         )
         _emit_usage({"provider": "noop", "status": "unknown_provider_fallback"})
     return NoopChatProvider()
+
+
+def is_gemini_configured(settings: Settings) -> bool:
+    """True when the shared Gemini demo credential + model are both present."""
+    from app.services import integration_configs as iconf
+
+    return iconf.resolve_gemini_config(settings).configured
+
+
+class GeminiService:
+    """Business-context-aware Gemini façade (Pre-Prompt-7 foundation).
+
+    ONE shared API credential; every request still carries the SERVER-DERIVED
+    business identity (slug/external_id) so the model answers for the right
+    business. Gemini NEVER decides authorization, ownership, membership /
+    payment / attendance status, renewals, totals, or permissions — those
+    stay deterministic backend/database responsibilities resolved BEFORE any
+    model call, and only their (sanitized) RESULTS may be attached.
+
+    Safety: any structured ``context`` dict attached to the prompt is passed
+    through ``sanitize_context_for_gemini`` (keys, tokens, secrets, passwords
+    stripped). Raw secrets must never be interpolated into prompts.
+    """
+
+    def __init__(self, settings: Settings) -> None:
+        self._s = settings
+        self._provider = GeminiChatProvider(settings)
+
+    @property
+    def configured(self) -> bool:
+        return is_gemini_configured(self._s)
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self._s.ai_enabled)
+
+    @property
+    def model(self) -> str:
+        return self._provider.model
+
+    @property
+    def mode(self) -> str:
+        if self.enabled and self.configured:
+            return "LIVE"
+        if not self.enabled:
+            return "DISABLED"
+        return "NOT_CONFIGURED"
+
+    def build_business_system(self, base_system: str, *, business: object) -> str:
+        """Prefix the system prompt with verified business identity.
+
+        ``business`` must be server-verified (Business row / BusinessContext /
+        slug already resolved server-side). Unknown businesses yield a neutral
+        scope that forbids business-specific claims.
+        """
+        from app.services import integration_configs as iconf
+
+        key = iconf.resolve_business_key(business)
+        if key in iconf.BUSINESS_KEYS:
+            slug = key
+            external_id = (
+                iconf.PRIME_EXTERNAL_ID if key == "prime" else iconf.NEST_EXTERNAL_ID
+            )
+            scope = (
+                f"[Business scope: slug={slug} external_id={external_id}. "
+                f"Answer ONLY for this business. Never mention or use the "
+                f"other business's data, credentials, or numbers.]"
+            )
+        else:
+            scope = (
+                "[Business scope: unknown. Give only generic answers; make no "
+                "business-specific claims about prices, hours, location, or status.]"
+            )
+        return f"{scope}\n{base_system}"
+
+    def chat(
+        self,
+        *,
+        system: str,
+        messages: list[dict],
+        tools: list[dict] | None = None,
+        business: object = None,
+        context: dict | None = None,
+    ) -> GatewayResult:
+        """Chat via the shared Gemini credential with business scope attached."""
+        from app.services import integration_configs as iconf
+
+        scoped_system = self.build_business_system(system, business=business)
+        if context:
+            safe = iconf.sanitize_context_for_gemini(dict(context))
+            scoped_system += f"\n[Verified business facts: {safe}]"
+        safe_messages = [
+            {
+                "role": m.get("role", "user"),
+                "content": str(m.get("content", ""))[:4000],
+            }
+            for m in messages[-20:]
+        ]
+        return self._provider.chat(
+            system=scoped_system,
+            messages=safe_messages,
+            tools=list(tools or [])[:16],
+            timeout_seconds=int(self._s.ai_timeout_seconds or 20),
+            max_output_tokens=int(self._s.ai_max_output_tokens or 1024),
+        )
+
+
+def get_gemini_service(settings: Settings) -> GeminiService:
+    """Construct the shared-credential Gemini service (no network on init)."""
+    return GeminiService(settings)
 
 
 # -- prompt / policy management (Block 10 step 48; §28) --------------------------

@@ -21,6 +21,7 @@ from app.api.v1.endpoints import (
     domain_events,
     growth_analytics,
     identity,
+    integrations,
     leads,
     members,
     memberships,
@@ -60,6 +61,7 @@ router.include_router(owner.router)
 router.include_router(automation.router)
 router.include_router(communications.router)
 router.include_router(whatsapp.router)
+router.include_router(integrations.router)
 router.include_router(ai_chat.router)
 router.include_router(growth_analytics.growth_router)
 router.include_router(growth_analytics.analytics_router)

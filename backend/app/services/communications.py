@@ -69,9 +69,28 @@ def send_message(
     body = (body or "")[:MAX_BODY]
     if not body and not template_code:
         raise ValueError("Message body or template_code is required.")
-    provider = get_messaging_provider(
-        settings, provider_name or ("whatsapp" if settings.whatsapp_enabled else "log")
-    )
+    # Business-scoped provider resolution (Pre-Prompt-7): the sending
+    # business's OWN WhatsApp credentials win; without a live business
+    # config the demo-safe log provider records the message (auditable)
+    # instead of failing the workflow — and NEVER another tenant's creds.
+    from app.repositories import businesses as _business_repo
+    from app.services.messaging import get_messaging_provider_for_business
+
+    try:
+        _business = _business_repo.get_by_id(db, business_id)
+    except Exception:  # noqa: BLE001 - lookup failure -> safe log fallback
+        _business = None
+    if _business is not None:
+        provider = get_messaging_provider_for_business(
+            settings,
+            _business,
+            provider_name or "",
+        )
+    else:
+        provider = get_messaging_provider(
+            settings,
+            provider_name or ("whatsapp" if settings.whatsapp_enabled else "log"),
+        )
     if channel != "whatsapp" and provider.name == "whatsapp":
         from app.services.messaging import LogProvider
 
@@ -261,6 +280,9 @@ def resolve_business_for_phone_number_id(
     """Map a Meta ``phone_number_id`` to its business (no hardcoded branches).
 
     Resolution order (first hit wins):
+    0. Business-scoped env (``PRIME_WHATSAPP_PHONE_NUMBER_ID`` /
+       ``NEST_WHATSAPP_PHONE_NUMBER_ID``) — credential-bound, strongest
+       signal: the phone id belongs to the business whose credentials hold it.
     1. Per-business ``business_settings.operational.whatsapp.phone_number_id``
        (owner-configured; supports distinct Prime/Nest numbers).
     2. ``WHATSAPP_PHONE_NUMBER_MAP`` env (``"prime:ID,nest:ID"`` → slug lookup).
@@ -272,6 +294,25 @@ def resolve_business_for_phone_number_id(
     """
     pid = (phone_number_id or "").strip()
     if not pid:
+        return None
+    # 0. Credential-bound business-scoped env mapping (isolation-first).
+    try:
+        from app.services import integration_configs as _iconf
+
+        scoped = _iconf.business_phone_number_ids(settings)
+        scope_key = scoped.get(pid, "")
+        if scope_key:
+            from app.repositories import businesses as _brepo
+
+            business = _brepo.get_by_slug(db, scope_key)
+            if (
+                business is not None
+                and getattr(business, "is_active", False)
+                and getattr(business, "status", "") == "active"
+            ):
+                return business
+            return None
+    except Exception:  # noqa: BLE001 - resolution must never 500 the webhook
         return None
     try:
         from sqlalchemy import select as _select
