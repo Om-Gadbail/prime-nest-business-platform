@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Nest Library — Enquiry (drop-in verification host)</title>
+    <style>
+      body { font-family: system-ui, sans-serif; margin: 0; padding: 24px; max-width: 640px; }
+      label { display: block; margin: 12px 0 4px; font-weight: 600; }
+      input, select, textarea { width: 100%; padding: 10px; font-size: 16px; }
+      button { margin-top: 16px; padding: 12px 20px; font-size: 16px; cursor: pointer; }
+      #result { margin-top: 16px; padding: 12px; border: 1px solid #ccc; min-height: 48px; }
+      #result[data-state="success"] { border-color: green; }
+      #result[data-state="error"] { border-color: red; }
+      .hp { position: absolute; left: -9999px; }
+    </style>
+  </head>
+  <body>
+    <h1>Nest Library — Seat / Membership Enquiry</h1>
+    <p id="config-status">Loading config…</p>
+    <form id="enquiry-form" novalidate>
+      <label for="name">Name</label>
+      <input id="name" name="name" type="text" autocomplete="name" required />
+      <label for="phone">Phone</label>
+      <input id="phone" name="phone" type="tel" autocomplete="tel" required />
+      <label for="interest">Interest</label>
+      <select id="interest" name="interest">
+        <option>Seat Inquiry</option>
+        <option>Membership Inquiry</option>
+        <option>Contact</option>
+        <option>Other</option>
+      </select>
+      <label for="message">Message</label>
+      <textarea id="message" name="message" rows="3"></textarea>
+      <input class="hp" type="text" name="website_url" id="website_url"
+             tabindex="-1" autocomplete="off" aria-hidden="true" />
+      <button type="submit">Send enquiry</button>
+    </form>
+    <div id="result" role="status" aria-live="polite" data-state="idle">Idle</div>
+    <!-- Vite dev serves ./main.ts with real VITE_* env (production path).
+         Built fallback for static hosts: ./dist/verify/main.js -->
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>

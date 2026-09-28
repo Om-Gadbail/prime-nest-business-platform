@@ -16,3 +16,14 @@ venv/
 Thumbs.db
 .vscode/
 .idea/
+
+# Frontend (staff dashboard + website integration packages)
+**/node_modules/
+**/dist/
+*.tsbuildinfo
+apps/staff-dashboard/test-results/
+apps/staff-dashboard/playwright-report/
+apps/staff-dashboard/blob-report/
+# Prompt 5 browser-evidence artefacts (results JSON is committed; bulky PNGs are not)
+integrations/nest-website/verify/shot-*.png
+docs/prime-shots/

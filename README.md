@@ -1,13 +1,32 @@
-# Prime Nest Business Platform — Backend (Phase 2, Blocks 0–1)
+# Prime Nest Business Platform — Backend + Staff Dashboard (Blocks 0–7)
 
-One shared, lean **modular monolith** backend (FastAPI + PostgreSQL) that will
-eventually serve Prime Fitness, Nest Library, staff dashboards, the Owner
-Command Center, CRM, notifications, analytics, and AI systems.
+One shared, lean **modular monolith** backend (FastAPI + PostgreSQL) that
+serves Prime Fitness, Nest Library, staff dashboards, the Owner
+Command Center, CRM, notifications, analytics, and AI systems — plus the
+shared **staff dashboard** (`apps/staff-dashboard`) used by both
+businesses.
+
+> **Full-platform integration (this mission):** `docker compose up --build`
+> brings up the complete local operating system — `db` (PostgreSQL 16) +
+> `backend` (FastAPI) + `redis` (rate limiting / scheduler coordination) +
+> `worker` + `scheduler` (per-business automation sweeps) — with Prime/Nest
+> websites, staff/owner dashboards, central Gemini gateway, WhatsApp layer,
+> and renewal automation all connected. Start here:
+> `docs/INTEGRATION_ARCHITECTURE.md`, `docs/LOCAL_DOCKER_RUNBOOK.md`,
+> `docs/END_TO_END_WORKFLOWS.md`, `docs/AI_INTEGRATION.md`,
+> `docs/WHATSAPP_INTEGRATION.md`, `docs/PRODUCTION_READINESS.md`,
+> `docs/FULL_PLATFORM_INTEGRATION_REPORT.md`. No production deploy.
 
 - **Step 1 (verified):** app wiring, configuration, database, migrations,
   health/readiness, Docker, tests.
-- **Block 1 (this release):** multi-tenant foundation + authentication + RBAC +
-  business memberships + business settings. No CRM/bookings/payments/AI yet.
+- **Block 1:** multi-tenant foundation + authentication + RBAC +
+  business memberships + business settings.
+- **Block 2:** leads/bookings/CRM, notifications, AI foundation, Prime
+  website connection (see `docs/BLOCK2.md`, `docs/PRIME_INTEGRATION.md`).
+- **Blocks 3 + 4 (this release):** Nest website connection, shared
+  business API layer, lead routing, unified identity, tasks, audit
+  system, dashboard APIs, Prime + Nest staff dashboards
+  (see `docs/BLOCK_3_4_IMPLEMENTATION.md`).
 
 ## Architecture
 
@@ -25,7 +44,7 @@ backend/
     repositories/      # SQL only (no business logic)
     middleware/        # request-id, error handlers
   migrations/          # Alembic env + versions (imports models.Base)
-  tests/               # pytest suite (Step 1 mocked-DB + Block 1 SQLite integration)
+  tests/               # pytest suite (Blocks 1–4 SQLite integration, ~212 tests)
   Dockerfile
   requirements.txt
   alembic.ini
@@ -133,7 +152,14 @@ docker compose up --build
 - Docs (non-production): <http://localhost:8000/docs>
 - Liveness: `GET /health` → `{"status": "ok", ...}` (no DB touch)
 - Readiness: `GET /ready` → 200 `{"status": "ready", ...}` or 503 `{"status": "not_ready", ...}`
+  (includes informational `redis: up|down|disabled`; API stays ready when Redis is down)
 - Version: `GET /api/v1/version`
+- Full stack: `db` + `redis` + `backend` + `worker` + `scheduler` (all with
+  healthchecks; backend waits on `db`+`redis`; worker/scheduler wait on `backend`).
+  Worker drains due automation every 15s; scheduler ticks every 60s with a Redis
+  lease (single-replica fallback without Redis — every job is idempotent).
+  Local-only throwaway live-E2E logins: `python backend/seed_live_e2e.py`
+  (creates `prime.owner@live.example.com` / `nest.owner@live.example.com`).
 
 > Port already in use? Another Postgres on your machine (e.g. a Phase 1
 > stack) may hold host port 5432. The example env maps host `5433` — the
@@ -158,6 +184,10 @@ uvicorn app.main:app --reload --port 8000
 | Name | Required | Example |
 |---|---|---|
 | `DATABASE_URL` | yes | `postgresql+psycopg://postgres:postgres@db:5432/app_db` |
+| `REDIS_URL` | no (empty = in-memory fallback) | `redis://redis:6379/0` (compose default) |
+| `SCHEDULER_INTERVAL_SECONDS` / `SCHEDULER_LEASE_SECONDS` | no (`60` / `120`) | scheduler tick + Redis lease |
+| `WORKER_INTERVAL_SECONDS` / `WORKER_BATCH_SIZE` | no (`15` / `50`) | worker drain loop |
+| `WHATSAPP_PHONE_NUMBER_MAP` | no (empty) | `prime:<id>,nest:<id>` multi-number routing |
 | `APP_ENV` | no (`development`) | `development` / `testing` / `production` |
 | `APP_NAME` / `APP_VERSION` | no | `Prime Nest Business Platform` / `0.1.0` |
 | `LOG_LEVEL` | no (`INFO`) | `INFO`, `DEBUG`, `WARNING` |
@@ -177,9 +207,11 @@ In production (`APP_ENV=production`) docs are disabled and a default/weak
 ## Docker commands
 
 ```bash
-docker compose up --build        # backend + postgres
+docker compose up --build        # backend + postgres + redis + worker + scheduler
 docker compose up -d             # background
 docker compose logs -f backend   # follow backend logs
+docker compose logs -f worker    # follow worker sweeps
+docker compose logs -f scheduler # follow scheduler ticks
 docker compose down              # stop
 docker compose down -v           # stop + delete DB volume (data loss!)
 ```
@@ -204,6 +236,14 @@ Migration history:
 - `0002_identity_multitenancy` — Block 1: `businesses`, `users`, `roles`,
   `permissions`, `role_permissions`, `business_memberships`,
   `business_settings`, `auth_sessions` (+ indexes/constraints).
+- `0003_block2_leads_crm` — Block 2: `contacts`, `customers`, `leads`,
+  `lead_activities`, `bookings`, `notifications`,
+  `notification_preferences`, `idempotency_records`, `ai_runs`
+  (+ indexes/constraints and the 9 Block 2 permission/grant rows).
+- `0004_block3_tasks_audit_identity` — Blocks 3/4: `tasks`,
+  `audit_events`, `persons`, `identity_links`, `leads` routing columns
+  (`routed_by`, `routing_reason`, `routed_at`) (+ the 7 Block 3/4
+  permission/grant rows).
 
 ## Development seed (safe, idempotent)
 
@@ -213,8 +253,11 @@ python -m app.services.seed
 ```
 
 Creates system roles + permission matrix, `prime`/`nest` businesses, and one
-empty `business_settings` row per business. Never deletes data, never creates
-users/credentials — tests create their own users. Safe to run repeatedly.
+empty `business_settings` row per business. Blocks 5–7 additionally seed
+the membership plan catalogues (Prime 4-plan starter, Nest exact 20-plan
+spec) and Nest seat areas — idempotently, never duplicating. Never
+deletes data, never creates users/credentials — tests create their own
+users. Safe to run repeatedly.
 
 ## Tests
 
@@ -232,6 +275,48 @@ pytest
   switch-business 403s), RBAC matrix (owner/admin/manager/staff/viewer,
   403s, escalation blocked, immediate role/revocation effect), adversarial
   tenant isolation (URL/query/body/forged-JWT/repository helpers).
+- Block 2 (~75 tests, SQLite-backed integration + PG/Docker
+  verification): staff lead/booking/contact/customer CRUD, filters,
+  pagination/sorting, assignment, status/transition matrices, notes,
+  activities, conversion (incl. reuse + atomicity), public intake
+  (validation, honeypot, 413/415/429, idempotency replay/conflict,
+  slug/inactive/disabled handling, no-leakage), notifications
+  (fan-out, unread, recipient/business isolation, prefs), AI
+  (disabled-first, noop, PII masking, audit, 502 path), RBAC matrix for
+  the 9 new permissions, adversarial Prime↔Nest isolation, auth/public
+  rate limits, CORS, redaction, migration-chain checks.
+- Blocks 3 + 4 (58 tests + live verification): lead routing
+  (slug/intent/transfer, dual-business audit), unified identity (strict
+  matching, ambiguity, family sharing, masking, OWNER/ADMIN gates),
+  tasks (CRUD, lifecycle, assignment, related-entity scoping, RBAC),
+  audit events (creation, attribution, secrecy, append-only, VIEWER
+  denied), dashboard APIs (overview/summaries/activity scoping),
+  Nest public intake, booking reopen, adversarial isolation across all
+  new resources, new-permission RBAC matrix, plus 43 live Docker checks
+  on PostgreSQL and 12 Playwright dashboard E2E (see
+  `docs/BLOCK_3_4_IMPLEMENTATION.md`).
+- Blocks 5–7 (33 tests, SQLite-backed integration + live-Postgres
+  migration/constraint verification): Prime operations (member CRUD +
+  360° profile, plan catalogue/versioning/history-safety, membership
+  lifecycle + Decimal money math, payment idempotency + refund gates,
+  idempotent attendance + checkout, renewal linking), Nest operations
+  (exact 20-plan catalogue, seat inventory + server availability,
+  allocation exclusivity + release/transfer + history, seat check-in,
+  confirmed-seat renewal continuity), owner analytics (truthful zeros,
+  presets/trends, documented funnel formulas, combined gating),
+  adversarial cross-business 404s for every entity + forged-link +
+  viewer/staff boundaries, DB-constraint concurrency nets
+  (seat/payment/attendance/renewal), and Prime/Nest/combined E2E flows.
+  Migration `0005` verified live on PostgreSQL 16: upgrade head →
+  downgrade → upgrade, partial-unique race indexes proven with
+  conflicting inserts (see `docs/BLOCKS_5_7_IMPLEMENTATION.md` §11).
+
+```bash
+cd apps/staff-dashboard
+npm install
+npm test        # vitest (20 tests: config, keys, UI, permission nav, ops)
+npm run e2e     # playwright (smoke + operations routes, 360/768/1280)
+```
 
 ## Authentication API overview
 
@@ -251,6 +336,111 @@ pytest
 Business context behavior: derived server-side from the Bearer token +
 fresh DB membership/role lookup. Frontend `business_id` is untrusted input.
 
+## Block 2 — Leads & CRM (completed)
+
+Shared CRM foundation for Prime + Nest on the same monolith/DB:
+
+- **Models + migration `0003_block2_leads_crm`:** `contacts`,
+  `customers`, `leads`, `lead_activities`, `bookings`, `notifications`,
+  `notification_preferences`, `idempotency_records`, `ai_runs`
+  (all business-scoped; see `docs/BLOCK2.md`).
+- **Staff APIs** (`/api/v1`, RBAC): leads (CRUD, assign, status
+  lifecycle, notes, activities, transactional convert→customer),
+  bookings (CRUD + confirm/cancel/complete/no-show transition matrix),
+  contacts/customers (safe search, family-shared phones allowed),
+  notifications (own+scoped inbox, unread count, preferences),
+  AI insights (advisory, disabled by default).
+- **Public intake** (`/api/v1/public/{slug}/leads|bookings`):
+  slug-verified, feature-flagged, rate-limited, 64KB pre-parse cap,
+  honeypot, `Idempotency-Key` dedup, safe minimal responses.
+  Public bookings are REQUESTED, never auto-confirmed.
+- **Hardening:** `RateLimiter` interface (in-process dev backend;
+  Redis required for multi-worker prod), explicit CORS origins
+  (`BACKEND_CORS_ORIGINS` ∪ `PUBLIC_SITE_ORIGINS`), security-event
+  logging without secrets, uniform 404s across tenant boundaries.
+- **AI:** provider-neutral (`noop` default), PII-masked contexts,
+  validated structured outputs, metadata-only audit. Works fully with
+  `AI_ENABLED=false`.
+- **Prime website:** `prime-fitness-website` submits trial/booking
+  forms via a centralized client (`src/lib/backend.ts`) — see
+  `docs/PRIME_INTEGRATION.md`.
+
+New env (see `.env.example`): `PUBLIC_SITE_ORIGINS`, `RATE_LIMIT_*`,
+`MAX_BODY_BYTES`, `AI_*`. Full reference: `docs/BLOCK2.md`.
+
+## Blocks 5–7 — Owner Command Center + Prime/Nest Operations (completed)
+
+Reusable operations platform on the same monolith/DB (see
+`docs/BLOCKS_5_7_IMPLEMENTATION.md`, `docs/integrations/`):
+
+- **Migration `0005_block5_7_operations`:** `members`,
+  `membership_plans`, `memberships` (price snapshots, lifecycle ⊥ money),
+  `payments` (idempotent, provider-neutral), `attendance`
+  (one-row-per-day), `renewals` (old→new links), `seat_areas`/`seats`,
+  `seat_allocations` (partial uniques: one ACTIVE per seat AND per
+  member), `approvals`, `domain_events` — all business-scoped — plus 20
+  new permissions with role grants.
+- **Owner APIs** (`/api/v1/owner/*`, RBAC): per-business overview,
+  revenue/KPI (presets `today 7d 30d month quarter all`), leads funnel
+  with documented formulas, and a combined Prime+Nest view gated on
+  `owner.combined.read` + OWNER/ADMIN. Empty businesses return zeros —
+  no invented metrics.
+- **Operations APIs:** members (+360° profile), plans (versioned,
+  history-safe), memberships (+status/renew), payments (+settle/refund
+  gates), attendance (idempotent check-in/out), renewals pipeline,
+  seats (server-computed availability, exclusive allocation with
+  release/transfer + history), approvals (request/decide, no
+  self-decision). Money is NUMERIC/Decimal; expiry is date-based in the
+  business timezone (`Asia/Kolkata` seeded).
+- **Capabilities, not branches:** modules toggle via
+  `business_settings.operational.capabilities` over template defaults
+  (`fitness` vs `self_study_center`); new clients provision via
+  `provision_business()` — no code forks.
+- **Dashboard:** `/owner`, `/members`, `/memberships`, `/plans`,
+  `/renewals`, `/payments`, `/attendance`, `/seats`, `/approvals`
+  (permission-gated nav, loading/empty/error/forbidden states,
+  responsive 360→1280+, no overflow).
+- **Websites NOT connected yet:** contracts documented in
+  `docs/integrations/` (plan/seat reads, intake reuse, onboarding);
+  staff/owner APIs stay private.
+
+## Blocks 8–12 — Automation + Communication + AI + Growth + Intelligence (completed)
+
+One cohesive platform on the same monolith/DB (see
+`docs/BLOCKS_8_12_IMPLEMENTATION.md`):
+
+- **Migration `0006_block8_12_growth_ai`:** `automation_rules/executions`
+  (idempotent), `daily_reports`, `conversations/messages/message_templates/
+  communication_preferences/message_delivery_events`, `ai_conversations/
+  ai_messages/ai_tool_calls/ai_recommendations`, `growth_sources/attributions/
+  referrals/cross_sell_opportunities/business_relationships/
+  analytics_snapshots` — plus 10 new permissions with role grants.
+- **Automation** (`/api/v1/automation/*`): domain events → rules → conditions
+  → typed actions (message/task/notification/follow-up/review/referral/
+  escalate/AI) → audit → bounded retry; 6 default rules/business; renewal
+  scan at configurable offsets; daily owner brief (`/api/v1/owner/brief`).
+- **Communication** (`/communications`, `/whatsapp`): provider-neutral
+  messaging (WhatsApp Cloud adapter + demo-safe log fallback), verified
+  webhooks with HMAC + idempotent inbound, 9 templates/business, opt-in
+  enforcement, unified staff timeline.
+- **AI** (`/public/{slug}/ai/chat`, `/public/{slug}/business-info`,
+  `/public/{slug}/availability`, `/ai/assistant`, `/ai/recommendations`):
+  shared website↔WhatsApp runtime, Gemini gateway (configurable model,
+  default `gemini-2.0-flash`), 15 public + 9 private tools, real availability
+  and `requested`-only bookings, kill switch + honest fallback, eval suite.
+- **Growth** (`/api/v1/growth/*`): source attribution funnel, referrals,
+  consent-gated cross-sell over configured Prime↔Nest relationships.
+- **Intelligence** (`/api/v1/analytics/*`): reproducible metrics + snapshots,
+  trend/driver/exception/action findings from measurements only.
+- **Dashboard:** `/automation`, `/communications`, `/assistant`, `/growth`,
+  `/analytics` + reusable `<WebsiteChat/>` for Prime/Nest sites.
+- **Demo:** `seed.seed_demo_data(db)` adds labeled, idempotent demo records;
+  mock data only in seed/tests — never in production code paths.
+
+New env (see `.env.example`): `GEMINI_API_KEY`, `GEMINI_MODEL`,
+`AI_MAX_OUTPUT_TOKENS`, `AI_MAX_TOOL_CALLS`, `AI_PUBLIC_CHAT_ENABLED`,
+`WHATSAPP_*`, `AUTOMATION_ENABLED`, `AUTOMATION_MAX_ATTEMPTS`.
+
 ## Security notes
 
 - Argon2id hashing; no plaintext/reversible/SHA256 passwords.
@@ -260,9 +450,15 @@ fresh DB membership/role lookup. Frontend `business_id` is untrusted input.
   traces / hashes / tokens / DSNs in responses); no password/token logging.
 - Server-side authorization + least privilege + deny-by-default + tenant
   isolation tested adversarially.
-- TODO (later block, not implemented): login-attempt throttling, refresh-abuse
-  rate limits, account lockout/risk controls — services are structured so a
-  Redis/DB-backed limiter can wrap `login`/`refresh` without refactoring.
+- Abuse protection: per-IP rate limits (public intake + login/refresh),
+  pre-parse 64KB body cap, honeypot + idempotency on public POSTs,
+  strict Pydantic validation, safe error envelope (no SQL/traces/hashes/
+  tokens/DSNs), no password/token logging. The dev limiter is
+  in-process — multi-worker production requires Redis (same interface).
+- TODO (later block, not implemented): account lockout/risk controls,
+  refresh-abuse Redis deployment, scheduler for idempotency retention
+  (`purge_expired` exists) — services are structured so a Redis/DB-backed
+  limiter wraps `login`/`refresh` without refactoring.
 
 ## Development workflow
 
@@ -276,7 +472,11 @@ fresh DB membership/role lookup. Frontend `business_id` is untrusted input.
 
 ## Known future work (intentionally deferred)
 
-Leads/CRM, customers, bookings, memberships-billing, payments, attendance,
-seats, WhatsApp automation, AI agents, analytics/Owner Command Center, Staff
-Dashboard UI, notifications, review/revenue intelligence, rate limiting,
-settings caching. Next: **Block 2 — Leads + CRM** on this foundation.
+Gateway webhook settlement (stubbed as pending-only), member self-service
+auth, Redis-backed rate limiting (multi-worker), settings caching.
+Production cutover: set `GEMINI_API_KEY` + `WHATSAPP_*` (see
+`docs/BLOCKS_8_12_IMPLEMENTATION.md`), schedule
+`POST /api/v1/automation/scheduler/run` via cron/systemd, and point the
+Prime/Nest sites at the public APIs with the `<WebsiteChat/>` widget.
+Next: **production hardening + load QA** (websites stay thin clients;
+backend remains source of truth).

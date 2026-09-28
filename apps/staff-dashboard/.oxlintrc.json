@@ -1,0 +1,14 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": ["react", "typescript", "oxc"],
+  "ignorePatterns": ["node_modules/**", "dist/**", "playwright-report/**", "test-results/**"],
+  "rules": {
+    "react/rules-of-hooks": "error",
+    // react/incompatible-library guards React Compiler memoization against
+    // libraries like react-hook-form. This app does NOT use React Compiler
+    // (vite plugins: react() + tailwindcss() only), so the single useForm
+    // warning is a confirmed false positive — verified: no compiler plugin,
+    // no memo() around form callbacks, no stale-UI path.
+    "react/incompatible-library": "off"
+  }
+}

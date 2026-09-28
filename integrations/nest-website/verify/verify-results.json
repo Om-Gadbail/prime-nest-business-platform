@@ -1,0 +1,70 @@
+[
+  {
+    "check": "desktop: homepage renders",
+    "pass": true
+  },
+  {
+    "check": "desktop: config fetch fires",
+    "pass": true
+  },
+  {
+    "check": "desktop: config targets nest slug",
+    "pass": true
+  },
+  {
+    "check": "desktop: lead POST targets nest slug",
+    "pass": true
+  },
+  {
+    "check": "desktop: never posts to prime slug",
+    "pass": true
+  },
+  {
+    "check": "desktop: idempotency-key header present",
+    "pass": true
+  },
+  {
+    "check": "desktop: success state renders",
+    "pass": true
+  },
+  {
+    "check": "desktop: error state renders",
+    "pass": true
+  },
+  {
+    "check": "mobile: homepage renders",
+    "pass": true
+  },
+  {
+    "check": "mobile: config fetch fires",
+    "pass": true
+  },
+  {
+    "check": "mobile: config targets nest slug",
+    "pass": true
+  },
+  {
+    "check": "mobile: lead POST targets nest slug",
+    "pass": true
+  },
+  {
+    "check": "mobile: never posts to prime slug",
+    "pass": true
+  },
+  {
+    "check": "mobile: idempotency-key header present",
+    "pass": true
+  },
+  {
+    "check": "mobile: success state renders",
+    "pass": true
+  },
+  {
+    "check": "mobile: error state renders",
+    "pass": true
+  },
+  {
+    "check": "honeypot value transmitted for backend filtering",
+    "pass": true
+  }
+]

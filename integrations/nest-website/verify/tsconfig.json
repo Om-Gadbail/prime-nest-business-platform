@@ -1,0 +1,14 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "skipLibCheck": true,
+    "outDir": "./dist",
+    "rootDir": "..",
+    "declaration": false,
+    "sourceMap": false
+  },
+  "include": ["../backend.ts", "../attribution.ts", "../forms.ts", "./main.ts"]
+}
