@@ -31,14 +31,27 @@ def parse_business_id(value: object) -> uuid.UUID | None:
 def apply_business_scope(stmt: Select, model: type, business_id: uuid.UUID) -> Select:
     """Apply tenant filter. Raises if model is not business-scoped (fail closed)."""
     if not issubclass(model, BusinessScopedMixin) and not hasattr(model, "business_id"):
-        raise TypeError(f"Model {model.__name__} is not business-scoped; refusing unscoped query.")
+        raise TypeError(
+            f"Model {model.__name__} is not business-scoped; refusing unscoped query."
+        )
     return stmt.where(model.business_id == business_id)  # type: ignore[attr-defined]
 
 
-def get_scoped(db: Session, model: type[T], object_id: object, business_id: uuid.UUID) -> T | None:
+def get_scoped(
+    db: Session, model: type[T], object_id: object, business_id: uuid.UUID
+) -> T | None:
     """Single-record fetch constrained to the business. Returns None if foreign."""
     if hasattr(model, "id"):
-        stmt = select(model).where(model.id == object_id)  # type: ignore[attr-defined]
+        # Coerce path/query strings to UUID objects: PostgreSQL adapts
+        # strings implicitly, but SQLite (tests) requires real UUIDs at
+        # bind time. Unparseable IDs behave as nonexistent (None -> 404).
+        coerced: object = object_id
+        if not isinstance(object_id, uuid.UUID):
+            try:
+                coerced = uuid.UUID(str(object_id))
+            except (ValueError, AttributeError, TypeError):
+                return None
+        stmt = select(model).where(model.id == coerced)  # type: ignore[attr-defined]
         stmt = apply_business_scope(stmt, model, business_id)
         return db.execute(stmt).scalars().first()
     # Models whose PK *is* business_id (e.g. BusinessSettings): the object
@@ -47,17 +60,28 @@ def get_scoped(db: Session, model: type[T], object_id: object, business_id: uuid
         try:
             import uuid as _uuid
 
-            wanted = object_id if isinstance(object_id, _uuid.UUID) else _uuid.UUID(str(object_id))
+            wanted = (
+                object_id
+                if isinstance(object_id, _uuid.UUID)
+                else _uuid.UUID(str(object_id))
+            )
         except (ValueError, TypeError, AttributeError):
             return None
         if wanted != business_id:
             return None
         return db.get(model, wanted)
-    raise TypeError(f"Model {model.__name__} has no scoping key; refusing unscoped query.")
+    raise TypeError(
+        f"Model {model.__name__} has no scoping key; refusing unscoped query."
+    )
 
 
 def list_scoped(
-    db: Session, model: type[T], business_id: uuid.UUID, *, limit: int = 100, offset: int = 0
+    db: Session,
+    model: type[T],
+    business_id: uuid.UUID,
+    *,
+    limit: int = 100,
+    offset: int = 0,
 ) -> list[T]:
     stmt = apply_business_scope(select(model), model, business_id)
     stmt = stmt.offset(offset).limit(limit)
@@ -67,6 +91,8 @@ def list_scoped(
 def count_scoped(db: Session, model: type[T], business_id: uuid.UUID) -> int:
     from sqlalchemy import func
 
-    stmt = apply_business_scope(select(func.count()).select_from(model), model, business_id)
+    stmt = apply_business_scope(
+        select(func.count()).select_from(model), model, business_id
+    )
     result = db.execute(stmt).scalar()
     return int(result or 0)

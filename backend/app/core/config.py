@@ -50,7 +50,9 @@ class Settings(BaseSettings):
     )
 
     app_name: str = Field(default="Prime Nest Business Platform")
-    app_env: Literal["development", "testing", "production"] = Field(default="development")
+    app_env: Literal["development", "testing", "production"] = Field(
+        default="development"
+    )
     app_version: str = Field(default="0.1.0")
     api_v1_prefix: str = Field(default="/api/v1")
     log_level: str = Field(default="INFO")
@@ -75,7 +77,9 @@ class Settings(BaseSettings):
     # Development/demo bootstrap for the single canonical owner identity.
     # The password default below is a DEMO credential for non-production
     # only; production refuses to seed the demo password (see seed service).
-    owner_seed_email: str = Field(default="owner@prime-nest-dashboard.com", max_length=320)
+    owner_seed_email: str = Field(
+        default="owner@prime-nest-dashboard.com", max_length=320
+    )
     owner_seed_password: str = Field(default="OwnerDemo123!", max_length=128)
     seed_platform_owner: bool = Field(default=True)
 
@@ -170,6 +174,12 @@ class Settings(BaseSettings):
     automation_enabled: bool = Field(default=True)
     automation_max_attempts: int = Field(default=5, ge=1, le=10)
 
+    # --- Prompt 5: payment provider webhook verification ---
+    # HMAC secret for provider callbacks. Empty = webhooks rejected with
+    # 503 (never accept unverified money movement). Test/simulated
+    # webhooks use PAYMENT_WEBHOOK_SECRET=test-secret in local/dev only.
+    payment_webhook_secret: str = Field(default="")
+
     @field_validator("database_url")
     @classmethod
     def validate_database_url(cls, v: str) -> str:
@@ -180,7 +190,9 @@ class Settings(BaseSettings):
                 "postgresql+psycopg://postgres:postgres@db:5432/app_db"
             )
         vv = v.strip()
-        if not vv.startswith(("postgresql://", "postgresql+psycopg://", "postgresql+psycopg2://")):
+        if not vv.startswith(
+            ("postgresql://", "postgresql+psycopg://", "postgresql+psycopg2://")
+        ):
             raise ValueError(
                 "DATABASE_URL must be a PostgreSQL URL starting with "
                 "'postgresql://' or 'postgresql+psycopg://'. "

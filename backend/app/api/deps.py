@@ -62,7 +62,9 @@ def _extract_bearer_token(
 def get_current_context(
     request: Request,
     db: Session = Depends(get_db),
-    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)] = None,
+    credentials: Annotated[
+        HTTPAuthorizationCredentials | None, Depends(bearer_scheme)
+    ] = None,
 ) -> AuthenticatedContext:
     settings = get_settings()
     token = _extract_bearer_token(credentials)

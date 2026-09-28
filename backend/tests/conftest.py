@@ -32,12 +32,17 @@ def _isolated_env(monkeypatch: pytest.MonkeyPatch) -> None:
     # Drop cached singletons so the new env takes effect per test.
     from app.core import database
     from app.core.config import get_settings
+    from app.services.rate_limit import InMemoryRateLimiter, set_limiter
 
     get_settings.cache_clear()
     database.reset_engine_cache()
+    # Fresh rate-limit state per test (the limiter is process-global; without
+    # this, one test's logins would consume another test's bucket).
+    set_limiter(InMemoryRateLimiter())
     yield
     get_settings.cache_clear()
     database.reset_engine_cache()
+    set_limiter(InMemoryRateLimiter())
 
 
 @pytest.fixture

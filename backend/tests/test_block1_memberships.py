@@ -28,7 +28,8 @@ def env():
                             role_name="STAFF", is_default=True)
         add_test_membership(db, user_id=both_user.id, business_slug="nest",
                             role_name="VIEWER")
-        loner = create_test_user(db, email="loner@example.com")
+        # User row must exist (login attempt below); the name is intentionally unused.
+        create_test_user(db, email="loner@example.com")
         suspended = create_test_user(db, email="suspended@example.com")
         add_test_membership(db, user_id=suspended.id, business_slug="prime",
                             role_name="STAFF", status="suspended", is_default=True)

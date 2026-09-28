@@ -74,7 +74,7 @@ def add_test_membership(
     assert business is not None, f"seed missing business {business_slug}"
     role = membership_repo.get_role_by_name(db, name=role_name)
     assert role is not None, f"seed missing role {role_name}"
-    membership = membership_repo.create_membership(
+    membership_repo.create_membership(
         db,
         user_id=user_id,  # type: ignore[arg-type]
         business_id=business.id,

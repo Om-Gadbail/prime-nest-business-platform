@@ -25,8 +25,9 @@ target_metadata = Base.metadata
 def _database_url() -> str:
     try:
         return get_settings().database_url
-    except Exception:
-        # Allow `alembic` CLI to print help without a configured env.
+    except ValueError:
+        # Allow `alembic` CLI to print help without a configured env
+        # (pydantic/pydantic-settings raise ValueError subclasses).
         return os.getenv(
             "DATABASE_URL", "postgresql+psycopg://postgres:postgres@db:5432/app_db"
         )

@@ -38,16 +38,21 @@ def main() -> None:
     signal.signal(signal.SIGINT, _handle_stop)
     rate_limit_service.configure_redis_limiter(settings)
     interval = max(5, int(settings.worker_interval_seconds or 15))
-    logger.info("worker starting interval=%ss batch=%s redis=%s",
-                interval, settings.worker_batch_size,
-                "configured" if (settings.redis_url or "").strip() else "off")
+    logger.info(
+        "worker starting interval=%ss batch=%s redis=%s",
+        interval,
+        settings.worker_batch_size,
+        "configured" if (settings.redis_url or "").strip() else "off",
+    )
     factory = get_session_factory()
     # Ensure base seed exists so sweeps always have businesses/rules/templates.
     # The unified platform owner is included unless SEED_PLATFORM_OWNER=false.
     try:
         db = factory()
         try:
-            seed_service.seed_development(db, include_owner=settings.seed_platform_owner)
+            seed_service.seed_development(
+                db, include_owner=settings.seed_platform_owner
+            )
         finally:
             db.close()
     except Exception as exc:  # noqa: BLE001 - worker must keep running; next tick retries

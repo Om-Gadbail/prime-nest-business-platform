@@ -12,7 +12,9 @@ from app.models.auth_session import AuthSession
 
 
 def get_by_hash(db: Session, refresh_token_hash: str) -> AuthSession | None:
-    stmt = select(AuthSession).where(AuthSession.refresh_token_hash == refresh_token_hash)
+    stmt = select(AuthSession).where(
+        AuthSession.refresh_token_hash == refresh_token_hash
+    )
     return db.execute(stmt).scalars().first()
 
 

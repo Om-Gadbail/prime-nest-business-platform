@@ -133,9 +133,7 @@ def ensure_businesses(db: Session) -> list[Business]:
     templates.ensure_plans(
         db, business_id=nest.id, plans=nest_spec["plans"], currency="INR"
     )
-    templates.ensure_seat_areas(
-        db, business_id=nest.id, areas=nest_spec["seat_areas"]
-    )
+    templates.ensure_seat_areas(db, business_id=nest.id, areas=nest_spec["seat_areas"])
     db.flush()
     return [prime, nest]
 
@@ -183,8 +181,14 @@ def ensure_platform_owner(
     from app.core.config import get_settings as _get_settings
 
     settings = _get_settings()
-    owner_email = (email or settings.owner_seed_email or OWNER_SEED_EMAIL).strip().lower()
-    raw_password = password or _os.environ.get("OWNER_SEED_PASSWORD") or settings.owner_seed_password
+    owner_email = (
+        (email or settings.owner_seed_email or OWNER_SEED_EMAIL).strip().lower()
+    )
+    raw_password = (
+        password
+        or _os.environ.get("OWNER_SEED_PASSWORD")
+        or settings.owner_seed_password
+    )
     if settings.is_production and raw_password == OWNER_SEED_PASSWORD_DEMO:
         raise ValueError(
             "Refusing to seed the demo owner password in production. "
@@ -247,11 +251,19 @@ def ensure_blocks812(db: Session, businesses: list[Business]) -> dict:
     by_slug = {b.slug: b for b in businesses}
     if "prime" in by_slug and "nest" in by_slug:
         brepo.upsert_relationship(
-            db, from_business_id=by_slug["prime"].id, to_business_id=by_slug["nest"].id,
-            rel_type="cross_sell", config={"note": "Prime Fitness <-> Nest Library growth link"})
+            db,
+            from_business_id=by_slug["prime"].id,
+            to_business_id=by_slug["nest"].id,
+            rel_type="cross_sell",
+            config={"note": "Prime Fitness <-> Nest Library growth link"},
+        )
         brepo.upsert_relationship(
-            db, from_business_id=by_slug["nest"].id, to_business_id=by_slug["prime"].id,
-            rel_type="cross_sell", config={"note": "Nest Library <-> Prime Fitness growth link"})
+            db,
+            from_business_id=by_slug["nest"].id,
+            to_business_id=by_slug["prime"].id,
+            rel_type="cross_sell",
+            config={"note": "Nest Library <-> Prime Fitness growth link"},
+        )
     db.flush()
     return {"seeded": len(businesses)}
 
@@ -263,9 +275,7 @@ def main() -> None:  # pragma: no cover - manual dev entrypoint
     factory = get_session_factory()
     db = factory()
     try:
-        result = seed_development(
-            db, include_owner=get_settings().seed_platform_owner
-        )
+        result = seed_development(db, include_owner=get_settings().seed_platform_owner)
         businesses = result["businesses"]
         assert isinstance(businesses, list)
         print(f"Seeded {len(businesses)} businesses + RBAC matrix.")
@@ -301,101 +311,189 @@ def seed_demo_data(db: Session) -> dict:
 
     businesses = ensure_businesses(db)
     ensure_blocks812(db, businesses)
-    created: dict[str, int] = {"leads": 0, "members": 0, "memberships": 0,
-                               "payments": 0, "bookings": 0, "referrals": 0}
+    created: dict[str, int] = {
+        "leads": 0,
+        "members": 0,
+        "memberships": 0,
+        "payments": 0,
+        "bookings": 0,
+        "referrals": 0,
+    }
     for business in businesses:
         slug = business.slug
         # -- leads (deterministic phones; service dedupes contacts) --
-        for i, (name, interest, source, attr) in enumerate([
-            ("Demo Walker", "General enquiry", "walk_in", "walk-in"),
-            ("Demo Searcher", "Membership Inquiry", "google", "google"),
-            ("Demo Scroller", "Trial visit", "instagram", "instagram"),
-        ]):
+        for i, (name, interest, source, attr) in enumerate(
+            [
+                ("Demo Walker", "General enquiry", "walk_in", "walk-in"),
+                ("Demo Searcher", "Membership Inquiry", "google", "google"),
+                ("Demo Scroller", "Trial visit", "instagram", "instagram"),
+            ]
+        ):
             display = f"{name} ({slug})"
-            exists = db.execute(_select(_Lead).where(
-                _Lead.business_id == business.id,
-                _Lead.display_name == display)).scalars().first()
+            exists = (
+                db.execute(
+                    _select(_Lead).where(
+                        _Lead.business_id == business.id, _Lead.display_name == display
+                    )
+                )
+                .scalars()
+                .first()
+            )
             if exists is None:
                 phone = f"+9100000{100 + i if slug == 'prime' else 200 + i}"
-                lead = leads_service.create_lead(db, business_id=business.id, data={
-                    "display_name": display, "phone": phone,
-                    "service_interest": interest, "source": source,
-                    "source_detail": "demo-seed", "consent_marketing": True,
-                })
+                lead = leads_service.create_lead(
+                    db,
+                    business_id=business.id,
+                    data={
+                        "display_name": display,
+                        "phone": phone,
+                        "service_interest": interest,
+                        "source": source,
+                        "source_detail": "demo-seed",
+                        "consent_marketing": True,
+                    },
+                )
                 growth_service.record_attribution(
-                    db, business_id=business.id, subject_type="lead",
-                    subject_id=lead.id, source_code=attr, campaign="demo-seed")
+                    db,
+                    business_id=business.id,
+                    subject_type="lead",
+                    subject_id=lead.id,
+                    source_code=attr,
+                    campaign="demo-seed",
+                )
                 created["leads"] += 1
         # -- members + memberships (one expiring soon) --
         for i in range(2):
             display = f"Demo Member {i + 1} ({slug})"
-            member = db.execute(_select(_Member).where(
-                _Member.business_id == business.id,
-                _Member.display_name == display)).scalars().first()
+            member = (
+                db.execute(
+                    _select(_Member).where(
+                        _Member.business_id == business.id,
+                        _Member.display_name == display,
+                    )
+                )
+                .scalars()
+                .first()
+            )
             if member is None:
-                member = members_service.create_member(db, business_id=business.id, data={
-                    "display_name": display,
-                    "phone": f"+9100000{310 + i if slug == 'prime' else 410 + i}",
-                    "source": "other",
-                    "notes": "demo-seed",
-                })
+                member = members_service.create_member(
+                    db,
+                    business_id=business.id,
+                    data={
+                        "display_name": display,
+                        "phone": f"+9100000{310 + i if slug == 'prime' else 410 + i}",
+                        "source": "other",
+                        "notes": "demo-seed",
+                    },
+                )
                 created["members"] += 1
             end = date.today() + timedelta(days=5 if i == 0 else 90)
             membership, is_new = memberships_service.create_membership(
-                db, business_id=business.id, data={
+                db,
+                business_id=business.id,
+                data={
                     "member_id": str(member.id),
                     "status": "active",
                     "start_date": (date.today() - timedelta(days=30)).isoformat(),
                     "end_date": end.isoformat(),
-                    "price": "2000.00", "currency": "INR",
+                    "price": "2000.00",
+                    "currency": "INR",
                     "idempotency_key": f"demo-{slug}-ms-{i}",
-                })
+                },
+            )
             if is_new:
                 created["memberships"] += 1
                 payment, pay_new = payments_service.create_payment(
-                    db, business_id=business.id, data={
+                    db,
+                    business_id=business.id,
+                    data={
                         "member_id": str(member.id),
                         "membership_id": str(membership.id),
-                        "amount": "2000.00", "currency": "INR",
+                        "amount": "2000.00",
+                        "currency": "INR",
                         "method": "upi",
                         "idempotency_key": f"demo-{slug}-pay-{i}",
-                    })
+                    },
+                )
                 if pay_new:
                     # pending -> paid through the real state machine (paid_at set).
-                    payments_service.set_status(db, business_id=business.id,
-                                                payment_id=payment.id, to_status="paid")
+                    payments_service.set_status(
+                        db,
+                        business_id=business.id,
+                        payment_id=payment.id,
+                        to_status="paid",
+                    )
                     created["payments"] += 1
                 try:
-                    attendance_service.check_in(db, business_id=business.id,
-                                                member_id=member.id, data={"source": "manual"})
+                    attendance_service.check_in(
+                        db,
+                        business_id=business.id,
+                        member_id=member.id,
+                        data={"source": "manual"},
+                    )
                 except ValueError:
                     pass
         # -- booking request (stays REQUESTED until staff confirm) --
-        if db.execute(_select(_Booking).where(
-                _Booking.business_id == business.id,
-                _Booking.title == "Demo visit (seed)")).scalars().first() is None:
-            bookings_service.create_booking(db, business_id=business.id, data={
-                "display_name": f"Demo Booker ({slug})", "phone": "+910000099999",
-                "booking_type": "visit", "title": "Demo visit (seed)",
-                "source": "website", "notes": "demo-seed",
-            })
+        if (
+            db.execute(
+                _select(_Booking).where(
+                    _Booking.business_id == business.id,
+                    _Booking.title == "Demo visit (seed)",
+                )
+            )
+            .scalars()
+            .first()
+            is None
+        ):
+            bookings_service.create_booking(
+                db,
+                business_id=business.id,
+                data={
+                    "display_name": f"Demo Booker ({slug})",
+                    "phone": "+910000099999",
+                    "booking_type": "visit",
+                    "title": "Demo visit (seed)",
+                    "source": "website",
+                    "notes": "demo-seed",
+                },
+            )
             created["bookings"] += 1
         # -- referral + sample conversation --
-        if db.execute(_select(_Referral).where(
-                _Referral.business_id == business.id,
-                _Referral.referred_name == f"Demo Friend ({slug})")).scalars().first() is None:
-            growth_service.create_referral(db, business_id=business.id, fields={
-                "referrer_name": f"Demo Member 1 ({slug})",
-                "referred_name": f"Demo Friend ({slug})",
-                "referred_phone": "+910000088888", "source": "demo-seed",
-                "consent": True, "create_lead": True, "notes": "demo seed referral",
-            })
+        if (
+            db.execute(
+                _select(_Referral).where(
+                    _Referral.business_id == business.id,
+                    _Referral.referred_name == f"Demo Friend ({slug})",
+                )
+            )
+            .scalars()
+            .first()
+            is None
+        ):
+            growth_service.create_referral(
+                db,
+                business_id=business.id,
+                fields={
+                    "referrer_name": f"Demo Member 1 ({slug})",
+                    "referred_name": f"Demo Friend ({slug})",
+                    "referred_phone": "+910000088888",
+                    "source": "demo-seed",
+                    "consent": True,
+                    "create_lead": True,
+                    "notes": "demo seed referral",
+                },
+            )
             created["referrals"] += 1
-        comms.record_inbound(db, business_id=business.id, channel="whatsapp",
-                             external_id="+910000077777", sender="+910000077777",
-                             body="Hi! What are your timings? (demo)",
-                             provider_message_id=f"demo-{slug}-in-1",
-                             raw={"demo": True})
+        comms.record_inbound(
+            db,
+            business_id=business.id,
+            channel="whatsapp",
+            external_id="+910000077777",
+            sender="+910000077777",
+            body="Hi! What are your timings? (demo)",
+            provider_message_id=f"demo-{slug}-in-1",
+            raw={"demo": True},
+        )
     db.commit()
     return created
 

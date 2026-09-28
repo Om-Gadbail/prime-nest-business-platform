@@ -43,7 +43,9 @@ def get_engine() -> Engine:
         settings = get_settings()
         # Raises a clear ValidationError at startup if DATABASE_URL is bad.
         _engine = _build_engine(settings.database_url)
-        _session_factory = sessionmaker(bind=_engine, autoflush=False, expire_on_commit=False)
+        _session_factory = sessionmaker(
+            bind=_engine, autoflush=False, expire_on_commit=False
+        )
     assert _engine is not None
     return _engine
 

@@ -81,7 +81,9 @@ class BusinessResolver:
     """Single verified resolution paths (staff + public). No alternatives."""
 
     @staticmethod
-    def for_staff(ctx: AuthenticatedContext, *, request_id: str = "-") -> BusinessContext:
+    def for_staff(
+        ctx: AuthenticatedContext, *, request_id: str = "-"
+    ) -> BusinessContext:
         """Build the staff context. Fail closed on any missing/inactive part."""
         if ctx.business is None or ctx.membership is None:
             raise ForbiddenError("No active business context.")
@@ -96,7 +98,9 @@ class BusinessResolver:
         except routing.DatabaseRoutingError as exc:
             # No dangerous default tenant: a business without a trusted
             # database mapping cannot serve traffic.
-            raise ForbiddenError("Business database mapping is not configured.") from exc
+            raise ForbiddenError(
+                "Business database mapping is not configured."
+            ) from exc
         return BusinessContext(
             business=ctx.business,
             membership=ctx.membership,
@@ -132,9 +136,7 @@ class BusinessAccessPolicy:
     @staticmethod
     def require_any(ctx: BusinessContext, *permissions: str) -> None:
         if not any(p in ctx.permissions for p in permissions):
-            raise ForbiddenError(
-                f"Missing one of: {', '.join(permissions)}."
-            )
+            raise ForbiddenError(f"Missing one of: {', '.join(permissions)}.")
 
     @staticmethod
     def require_role(ctx: BusinessContext, *role_names: str) -> None:
@@ -145,7 +147,9 @@ class BusinessAccessPolicy:
             )
 
     @staticmethod
-    def assert_same_business(resource_business_id: uuid.UUID, ctx: BusinessContext) -> None:
+    def assert_same_business(
+        resource_business_id: uuid.UUID, ctx: BusinessContext
+    ) -> None:
         """Uniform 404 when a resource belongs to another business (no oracle)."""
         if resource_business_id != ctx.business_id:
             raise NotFoundError("Resource not found.")

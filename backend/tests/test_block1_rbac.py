@@ -8,7 +8,6 @@ from tests.block1_support import (
     TEST_PASSWORD,
     add_test_membership,
     create_test_user,
-    make_auth_client,
     make_test_session,
 )
 
@@ -18,7 +17,6 @@ def env():
     engine, db = make_test_session()
     try:
         tokens = {}
-        client_holder: dict = {}
         for role in ("OWNER", "ADMIN", "MANAGER", "STAFF", "VIEWER"):
             email = f"{role.lower()}@example.com"
             user = create_test_user(db, email=email)
@@ -76,7 +74,11 @@ def test_staff_limited_permissions(env) -> None:
     me = env["client"].get("/api/v1/auth/me", headers=_h(env["tokens"]["STAFF"])).json()
     assert "leads.create" in me["permissions"]
     assert "settings.update" not in me["permissions"]
-    assert "members.create" not in me["permissions"]
+    # Blocks 5-7: front-desk STAFF registers operational members (member
+    # profiles), but cannot update them or touch owner/analytics surfaces.
+    assert "members.create" in me["permissions"]
+    assert "members.update" not in me["permissions"]
+    assert "owner.combined.read" not in me["permissions"]
 
 
 def test_viewer_read_only(env) -> None:

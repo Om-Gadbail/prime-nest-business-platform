@@ -15,7 +15,9 @@ MEMBERSHIP_STATUSES = {"active", "suspended", "revoked"}
 class BusinessMembership(Base, TimestampMixin):
     __tablename__ = "business_memberships"
     __table_args__ = (
-        UniqueConstraint("user_id", "business_id", name="uq_business_memberships_user_business"),
+        UniqueConstraint(
+            "user_id", "business_id", name="uq_business_memberships_user_business"
+        ),
         Index("ix_business_memberships_user_id", "user_id"),
         Index("ix_business_memberships_business_id", "business_id"),
         Index("ix_business_memberships_role_id", "role_id"),
@@ -42,5 +44,7 @@ class BusinessMembership(Base, TimestampMixin):
     is_default: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
     user: Mapped["User"] = relationship("User", back_populates="memberships")
-    business: Mapped["Business"] = relationship("Business", back_populates="memberships")
+    business: Mapped["Business"] = relationship(
+        "Business", back_populates="memberships"
+    )
     role: Mapped["Role"] = relationship("Role", back_populates="memberships")

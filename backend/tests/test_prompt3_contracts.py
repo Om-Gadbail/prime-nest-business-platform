@@ -249,9 +249,11 @@ class TestOpenAPIContract:
             1 for _path, item in paths.items() for method in item
             if method in ("get", "post", "put", "patch", "delete", "options", "head")
         )
-        # Frozen contract surface (Prompt 1: 160 routes incl. ops/docs).
-        assert len(paths) == 125, len(paths)
-        assert operations == 156, operations
+        # Frozen contract surface (Prompt 1: 160 routes incl. ops/docs;
+        # Prompt 5: +4 paths/+4 ops — renewals/{id}/status, payments/webhook,
+        # domain-events, members/{id}/timeline).
+        assert len(paths) == 129, len(paths)
+        assert operations == 160, operations
         # Anchors every frontend needs.
         for anchor in ("/api/v1/auth/login", "/api/v1/auth/switch-business",
                        "/api/v1/auth/businesses", "/api/v1/owner/combined",

@@ -91,9 +91,12 @@ def _today_in_business_tz(business_tz: str | None) -> date:
 
 
 def business_overview(
-    db: Session, *, ctx: BusinessContext,
+    db: Session,
+    *,
+    ctx: BusinessContext,
     soon_days: int = DEFAULT_SOON_DAYS,
-    start: datetime | None = None, end: datetime | None = None,
+    start: datetime | None = None,
+    end: datetime | None = None,
 ) -> dict:
     """Per-business owner snapshot (single authorized business)."""
     today = _today_in_business_tz(getattr(ctx.business, "timezone", None))
@@ -133,7 +136,8 @@ def business_overview(
     from app.services import capabilities as caps
 
     abilities = caps.get_capabilities(
-        db, business_id=ctx.business_id,
+        db,
+        business_id=ctx.business_id,
         business_type=str(getattr(ctx.business, "business_type", "other")),
     )
     if abilities.get("seat_management"):
@@ -144,8 +148,11 @@ def business_overview(
 
 
 def revenue_report(
-    db: Session, *, ctx: BusinessContext,
-    start: datetime | None, end: datetime | None,
+    db: Session,
+    *,
+    ctx: BusinessContext,
+    start: datetime | None,
+    end: datetime | None,
 ) -> dict:
     revenue = analytics_repo.revenue_summary(
         db, business_id=ctx.business_id, start=start, end=end
@@ -168,8 +175,11 @@ def revenue_report(
 
 
 def leads_report(
-    db: Session, *, ctx: BusinessContext,
-    start: datetime | None, end: datetime | None,
+    db: Session,
+    *,
+    ctx: BusinessContext,
+    start: datetime | None,
+    end: datetime | None,
 ) -> dict:
     funnel = analytics_repo.lead_funnel(
         db, business_id=ctx.business_id, start=start, end=end
@@ -237,15 +247,14 @@ def _resolve_combined_businesses(
     wanted = (scope or "all").strip().lower()
     if wanted in ("all", ""):
         businesses = [
-            b for b in business_repo.list_all(db)
+            b
+            for b in business_repo.list_all(db)
             if b.id in grants and b.is_active and b.status == "active"
         ]
         if not businesses:
             raise ForbiddenError("No authorized businesses for combined view.")
         return businesses
-    match = next(
-        (b for b in business_repo.list_all(db) if b.slug == wanted), None
-    )
+    match = next((b for b in business_repo.list_all(db) if b.slug == wanted), None)
     if match is None:
         from app.services.errors import NotFoundError
 
@@ -258,16 +267,18 @@ def _resolve_combined_businesses(
 
 
 def combined_overview(
-    db: Session, *, ctx: BusinessContext, scope: str | None,
-    start: datetime | None, end: datetime | None,
+    db: Session,
+    *,
+    ctx: BusinessContext,
+    scope: str | None,
+    start: datetime | None,
+    end: datetime | None,
     soon_days: int = DEFAULT_SOON_DAYS,
 ) -> dict:
     """Prime + Nest (+ future) combined command center (explicitly gated)."""
     businesses = _resolve_combined_businesses(db, ctx=ctx, scope=scope)
     ids = [b.id for b in businesses]
-    rollup = analytics_repo.combined_totals(
-        db, business_ids=ids, start=start, end=end
-    )
+    rollup = analytics_repo.combined_totals(db, business_ids=ids, start=start, end=end)
     per_business: list[dict] = []
     slug_by_id = {str(b.id): b for b in businesses}
     for entry in rollup["businesses"]:
@@ -277,9 +288,7 @@ def combined_overview(
         membership = analytics_repo.membership_counts(
             db, business_id=bid, today=today, soon_days=soon_days
         )
-        attendance = analytics_repo.attendance_summary(
-            db, business_id=bid, day=today
-        )
+        attendance = analytics_repo.attendance_summary(db, business_id=bid, day=today)
         renewals = analytics_repo.renewal_pipeline(db, business_id=bid, today=today)
         item = {
             "business": {
@@ -297,7 +306,8 @@ def combined_overview(
         from app.services import capabilities as caps
 
         if caps.get_capabilities(
-            db, business_id=bid,
+            db,
+            business_id=bid,
             business_type=str(getattr(biz, "business_type", "other") or "other"),
         ).get("seat_management"):
             item["seats"] = seats_repo.availability_summary(db, business_id=bid)

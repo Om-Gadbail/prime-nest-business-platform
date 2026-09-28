@@ -15,7 +15,9 @@ class User(Base, TimestampMixin):
 
     id = uuid_pk()
     # Always stored normalized (lowercased + stripped) — enforced in services.
-    email: Mapped[str] = mapped_column(String(320), unique=True, nullable=False, index=True)
+    email: Mapped[str] = mapped_column(
+        String(320), unique=True, nullable=False, index=True
+    )
     # Argon2id hash via pwdlib. NEVER exposed via API.
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
     full_name: Mapped[str] = mapped_column(String(200), nullable=False, default="")
@@ -24,7 +26,9 @@ class User(Base, TimestampMixin):
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     is_verified: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
-    last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_login_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     memberships: Mapped[list["BusinessMembership"]] = relationship(
         "BusinessMembership", back_populates="user", passive_deletes=True

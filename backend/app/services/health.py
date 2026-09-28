@@ -82,7 +82,10 @@ def _database_status(*, db_up: bool) -> dict:
                 detail[key] = "down"
         return detail
     except Exception:  # noqa: BLE001 - readiness degrades, never crashes
-        return {key: ("up" if db_up else "down") for key in ("platform_db", "prime_db", "nest_db")}
+        return {
+            key: ("up" if db_up else "down")
+            for key in ("platform_db", "prime_db", "nest_db")
+        }
 
 
 def _redis_status(settings) -> str:
@@ -92,6 +95,7 @@ def _redis_status(settings) -> str:
         return "disabled"
     try:
         import redis as _redis
+
         client = _redis.Redis.from_url(url, socket_connect_timeout=2, socket_timeout=2)
         client.ping()
         return "up"

@@ -42,8 +42,11 @@ def _pick_default_membership(
     active = [m for m in memberships if m.status == "active"]
     # Filter to active businesses only.
     usable = [
-        m for m in active
-        if m.business is not None and m.business.is_active and m.business.status == "active"
+        m
+        for m in active
+        if m.business is not None
+        and m.business.is_active
+        and m.business.status == "active"
     ]
     if not usable:
         return None
@@ -72,7 +75,9 @@ def _issue_session(
     )
     refresh_raw = security.generate_refresh_token()
     refresh_hash = security.hash_refresh_token(refresh_raw)
-    expires_at = datetime.now(timezone.utc) + timedelta(days=settings.refresh_token_expire_days)
+    expires_at = datetime.now(timezone.utc) + timedelta(
+        days=settings.refresh_token_expire_days
+    )
     session_repo.create(
         db,
         user_id=user.id,
@@ -100,7 +105,9 @@ def login(
     # Generic failure: do not leak whether the email exists.
     if user is None or not user.is_active:
         # Run a dummy verify to keep timing roughly constant.
-        security.verify_password(password, security.hash_password("dummy-password-value"))
+        security.verify_password(
+            password, security.hash_password("dummy-password-value")
+        )
         raise AuthError(GENERIC_FAILURE)
     if not security.verify_password(password, user.password_hash):
         raise AuthError(GENERIC_FAILURE)
@@ -127,8 +134,12 @@ def login(
 
     business = target.business if target else None
     access, refresh_raw, _exp = _issue_session(
-        db, settings, user=user, business=business,
-        user_agent=user_agent, ip_address=ip_address,
+        db,
+        settings,
+        user=user,
+        business=business,
+        user_agent=user_agent,
+        ip_address=ip_address,
     )
     user_repo.set_last_login(db, user)
     db.commit()
@@ -138,7 +149,9 @@ def login(
         fresh_membership = membership_repo.get_membership(
             db, user_id=user.id, business_id=target.business_id
         )
-    ctx = authz.build_context(db, user=user, business=business, membership=fresh_membership)
+    ctx = authz.build_context(
+        db, user=user, business=business, membership=fresh_membership
+    )
     return {
         "user": user,
         "business": business,
@@ -202,12 +215,18 @@ def refresh(
     session_repo.revoke(db, sess)
     new_business = business
     access, new_refresh_raw, _exp = _issue_session(
-        db, settings, user=user, business=new_business,
-        user_agent=user_agent or sess.user_agent, ip_address=ip_address or sess.ip_address,
+        db,
+        settings,
+        user=user,
+        business=new_business,
+        user_agent=user_agent or sess.user_agent,
+        ip_address=ip_address or sess.ip_address,
     )
     session_repo.touch(db, sess)
     db.commit()
-    ctx = authz.build_context(db, user=user, business=new_business, membership=membership)
+    ctx = authz.build_context(
+        db, user=user, business=new_business, membership=membership
+    )
     return {
         "user": user,
         "business": new_business,
@@ -258,8 +277,12 @@ def switch_business(
         raise ForbiddenError("No access to the requested business.")
 
     access, refresh_raw, _exp = _issue_session(
-        db, settings, user=user, business=business,
-        user_agent=user_agent, ip_address=ip_address,
+        db,
+        settings,
+        user=user,
+        business=business,
+        user_agent=user_agent,
+        ip_address=ip_address,
     )
     db.commit()
     ctx = authz.build_context(db, user=user, business=business, membership=membership)
@@ -274,7 +297,9 @@ def switch_business(
     }
 
 
-def authenticate_request(db: Session, settings: Settings, *, token: str) -> authz.AuthenticatedContext:
+def authenticate_request(
+    db: Session, settings: Settings, *, token: str
+) -> authz.AuthenticatedContext:
     """Validate Bearer token against DB state (membership/role are authoritative)."""
     try:
         payload = security.decode_access_token(
@@ -305,7 +330,9 @@ def authenticate_request(db: Session, settings: Settings, *, token: str) -> auth
     business = business_repo.get_by_id(db, business_id)
     if business is None or not business.is_active or business.status != "active":
         raise ForbiddenError("Business access is no longer active.")
-    membership = membership_repo.get_membership(db, user_id=user.id, business_id=business_id)
+    membership = membership_repo.get_membership(
+        db, user_id=user.id, business_id=business_id
+    )
     if membership is None or membership.status != "active":
         raise ForbiddenError("Business access is no longer active.")
     return authz.build_context(db, user=user, business=business, membership=membership)

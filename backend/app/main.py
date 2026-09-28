@@ -17,6 +17,7 @@ from app.api import deps
 from app.api.v1.router import router as v1_router
 from app.core.config import get_settings
 from app.core.logging import get_logger, setup_logging
+from app.middleware.body_size import BodySizeLimitMiddleware
 from app.middleware.error_handler import register_exception_handlers
 from app.middleware.request_id import RequestIDMiddleware
 from app.schemas.health import HealthResponse, NotReadyResponse, ReadyResponse
@@ -29,8 +30,18 @@ logger = get_logger(__name__)
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
     logger.info(
-        "starting app=%r env=%s version=%s", settings.app_name, settings.app_env, settings.app_version
+        "starting app=%r env=%s version=%s",
+        settings.app_name,
+        settings.app_env,
+        settings.app_version,
     )
+    try:
+        from app.services import rate_limit as rate_limit_service
+
+        backend = rate_limit_service.configure_redis_limiter(settings)
+        logger.info("rate limiter backend=%s", backend)
+    except Exception as exc:  # noqa: BLE001 - limiter fallback must never block boot
+        logger.warning("rate limiter configuration skipped: %s", type(exc).__name__)
     yield
     logger.info("stopping app")
 
@@ -49,10 +60,13 @@ def create_app() -> FastAPI:
     )
 
     # --- middleware ---
+    # Added first so it runs innermost (after RequestID): 413s carry the
+    # request ID and never touch the JSON parser (header-only check).
+    app.add_middleware(BodySizeLimitMiddleware)
     app.add_middleware(RequestIDMiddleware)
     # Safe CORS: exact origins only; empty list = same-origin only.
     # In development, allow common local dev servers when nothing is configured.
-    cors_origins = list(settings.backend_cors_origins)
+    cors_origins = list(settings.effective_cors_origins)
     if not cors_origins and not settings.is_production:
         cors_origins = ["http://localhost:3000", "http://localhost:5173"]
     app.add_middleware(
@@ -60,13 +74,23 @@ def create_app() -> FastAPI:
         allow_origins=cors_origins,
         allow_credentials=True,
         allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-        allow_headers=["Authorization", "Content-Type", "X-Request-ID"],
+        allow_headers=[
+            "Authorization",
+            "Content-Type",
+            "X-Request-ID",
+            "Idempotency-Key",
+        ],
     )
 
     register_exception_handlers(app)
 
     # --- operational endpoints (unversioned) ---
-    @app.get("/health", response_model=HealthResponse, tags=["operations"], summary="Liveness")
+    @app.get(
+        "/health",
+        response_model=HealthResponse,
+        tags=["operations"],
+        summary="Liveness",
+    )
     def health() -> dict:
         # Liveness: no DB touch, so orchestrators can restart safely.
         return health_service.get_health()

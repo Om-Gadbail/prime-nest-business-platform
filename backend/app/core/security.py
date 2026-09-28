@@ -15,6 +15,7 @@ from datetime import datetime, timedelta, timezone
 
 import jwt
 from pwdlib import PasswordHash
+from pwdlib.exceptions import PwdlibError
 
 _password_hash = PasswordHash.recommended()
 
@@ -29,9 +30,12 @@ def hash_password(password: str) -> str:
 
 
 def verify_password(password: str, password_hash: str) -> bool:
+    # pwdlib raises PwdlibError (e.g. UnknownHashError) for malformed stored
+    # hashes; (ValueError, AttributeError, TypeError) covers corrupt inputs.
+    # Anything else is unexpected and must surface, not read as "mismatch".
     try:
         return _password_hash.verify(password, password_hash)
-    except Exception:
+    except (PwdlibError, ValueError, AttributeError, TypeError):
         return False
 
 

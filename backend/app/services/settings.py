@@ -29,7 +29,7 @@ def _validate_timezone(value: str) -> None:
 
     try:
         ZoneInfo(value)
-    except Exception as exc:
+    except ZoneInfoNotFoundError as exc:
         raise ValueError(f"Invalid timezone: {value}") from exc
 
 
@@ -59,7 +59,13 @@ def validate_settings_payload(payload: dict) -> dict[str, dict]:
 
 
 def _validate_branding(value: dict) -> dict:
-    allowed = {"display_name", "tagline", "logo_url", "primary_color", "secondary_color"}
+    allowed = {
+        "display_name",
+        "tagline",
+        "logo_url",
+        "primary_color",
+        "secondary_color",
+    }
     unknown = set(value.keys()) - allowed
     if unknown:
         raise ValueError(f"Unknown branding field(s): {sorted(unknown)}.")
@@ -67,7 +73,9 @@ def _validate_branding(value: dict) -> dict:
     for color_field in ("primary_color", "secondary_color"):
         if out.get(color_field) not in (None, ""):
             if not _HEX_COLOR_RE.match(str(out[color_field])):
-                raise ValueError(f"branding.{color_field} must be a hex color like '#1a2b3c'.")
+                raise ValueError(
+                    f"branding.{color_field} must be a hex color like '#1a2b3c'."
+                )
     if out.get("logo_url"):
         _validate_url(str(out["logo_url"]), field="branding.logo_url")
     return out
@@ -97,7 +105,12 @@ def _validate_contact(value: dict) -> dict:
 
 def _validate_address(value: dict) -> dict:
     allowed = {
-        "address_line_1", "address_line_2", "city", "state", "postal_code", "country",
+        "address_line_1",
+        "address_line_2",
+        "city",
+        "state",
+        "postal_code",
+        "country",
     }
     unknown = set(value.keys()) - allowed
     if unknown:
@@ -149,27 +162,105 @@ def _validate_localization(value: dict) -> dict:
             raise ValueError("localization.locale must look like 'en' or 'en-US'.")
     if out.get("currency") not in (None, ""):
         if not _CURRENCY_RE.match(str(out["currency"]).upper()):
-            raise ValueError("localization.currency must be a 3-letter ISO code like 'USD'.")
+            raise ValueError(
+                "localization.currency must be a 3-letter ISO code like 'USD'."
+            )
         out["currency"] = str(out["currency"]).upper()
     return out
 
 
 def _validate_operational(value: dict) -> dict:
-    allowed = {"booking_enabled", "lead_capture_enabled", "notifications_enabled"}
+    # Flat feature flags plus nested Blocks 5-7 configuration sections.
+    # Capability/module behavior is data (never `if business.name == …`).
+    allowed = {
+        "booking_enabled",
+        "lead_capture_enabled",
+        "notifications_enabled",
+        "capabilities",
+        "membership",
+        "payments",
+        "attendance",
+        "renewals",
+        "seats",
+        "dashboard",
+    }
     unknown = set(value.keys()) - allowed
     if unknown:
         raise ValueError(f"Unknown operational field(s): {sorted(unknown)}.")
     out = dict(value)
-    for flag in allowed:
+    for flag in ("booking_enabled", "lead_capture_enabled", "notifications_enabled"):
         if flag in out and not isinstance(out[flag], bool):
             raise ValueError(f"operational.{flag} must be a boolean.")
+    if "capabilities" in out and out["capabilities"] is not None:
+        out["capabilities"] = _validate_capabilities(out["capabilities"])
+    for section in (
+        "membership",
+        "payments",
+        "attendance",
+        "renewals",
+        "seats",
+        "dashboard",
+    ):
+        if section in out and out[section] is not None:
+            if not isinstance(out[section], dict):
+                raise ValueError(f"operational.{section} must be an object.")
+            out[section] = dict(out[section])
+    return out
+
+
+# Capability flags recognised by the Blocks 5-7 operational modules.
+# Unknown flags are rejected so typos fail loudly instead of silently
+# disabling features.
+KNOWN_CAPABILITIES = frozenset(
+    {
+        "crm",
+        "leads",
+        "bookings",
+        "memberships",
+        "members",
+        "payments",
+        "attendance",
+        "renewals",
+        "plans",
+        "seat_management",
+        "fitness_tracking",
+        "approvals",
+        "analytics",
+        "owner_dashboard",
+        # Blocks 8-12 modules (configurable per business, template-defaulted).
+        "automation",
+        "whatsapp",
+        "ai_assistant",
+        "ai_public_chat",
+        "growth",
+        "reviews",
+        "referrals",
+    }
+)
+
+
+def _validate_capabilities(value: object) -> dict:
+    if not isinstance(value, dict):
+        raise ValueError("operational.capabilities must be an object.")
+    unknown = set(value.keys()) - set(KNOWN_CAPABILITIES)
+    if unknown:
+        raise ValueError(f"Unknown capability flag(s): {sorted(unknown)}.")
+    out: dict[str, bool] = {}
+    for key, flag in value.items():
+        if not isinstance(flag, bool):
+            raise ValueError(f"operational.capabilities.{key} must be a boolean.")
+        out[key] = flag
     return out
 
 
 def get_settings(db: Session, *, business_id: object) -> BusinessSettings:
     import uuid as _uuid
 
-    bid = business_id if isinstance(business_id, _uuid.UUID) else _uuid.UUID(str(business_id))
+    bid = (
+        business_id
+        if isinstance(business_id, _uuid.UUID)
+        else _uuid.UUID(str(business_id))
+    )
     row = settings_repo.get_by_business(db, bid)
     if row is None:
         row = settings_repo.ensure_for_business(db, bid)
@@ -178,7 +269,9 @@ def get_settings(db: Session, *, business_id: object) -> BusinessSettings:
     return row
 
 
-def update_settings(db: Session, *, business_id: object, payload: dict) -> BusinessSettings:
+def update_settings(
+    db: Session, *, business_id: object, payload: dict
+) -> BusinessSettings:
     cleaned = validate_settings_payload(payload)
     row = get_settings(db, business_id=business_id)
     # Merge per section (partial update semantics).

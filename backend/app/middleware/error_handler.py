@@ -19,14 +19,21 @@ def _envelope(code: str, message: str) -> dict:
 
 def register_exception_handlers(app: FastAPI) -> None:
     @app.exception_handler(StarletteHTTPException)
-    async def http_handler(request: Request, exc: StarletteHTTPException) -> JSONResponse:
+    async def http_handler(
+        request: Request, exc: StarletteHTTPException
+    ) -> JSONResponse:
+        # Forward protocol headers (e.g. Retry-After on 429) alongside the
+        # safe envelope — the body itself never carries internals.
         return JSONResponse(
             status_code=exc.status_code,
             content=_envelope("http_error", str(exc.detail)),
+            headers=dict(exc.headers) if exc.headers else None,
         )
 
     @app.exception_handler(RequestValidationError)
-    async def validation_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
+    async def validation_handler(
+        request: Request, exc: RequestValidationError
+    ) -> JSONResponse:
         # Return a safe summary, not raw internals.
         details = "; ".join(
             f"{'.'.join(str(p) for p in e['loc'])}: {e['msg']}" for e in exc.errors()
@@ -39,10 +46,14 @@ def register_exception_handlers(app: FastAPI) -> None:
     @app.exception_handler(Exception)
     async def unhandled_handler(request: Request, exc: Exception) -> JSONResponse:
         request_id = getattr(request.state, "request_id", "-")
-        logger.exception("unhandled error request_id=%s: %s", request_id, type(exc).__name__)
+        logger.exception(
+            "unhandled error request_id=%s: %s", request_id, type(exc).__name__
+        )
         try:
             debug = not get_settings().is_production
         except Exception:  # noqa: BLE001
             debug = False
         message = f"{type(exc).__name__}: {exc}" if debug else "Internal server error."
-        return JSONResponse(status_code=500, content=_envelope("internal_error", message))
+        return JSONResponse(
+            status_code=500, content=_envelope("internal_error", message)
+        )

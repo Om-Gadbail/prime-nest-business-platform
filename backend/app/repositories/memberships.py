@@ -20,16 +20,24 @@ def get_membership(
             BusinessMembership.user_id == user_id,
             BusinessMembership.business_id == business_id,
         )
-        .options(selectinload(BusinessMembership.role), selectinload(BusinessMembership.business))
+        .options(
+            selectinload(BusinessMembership.role),
+            selectinload(BusinessMembership.business),
+        )
     )
     return db.execute(stmt).scalars().first()
 
 
-def list_user_memberships(db: Session, *, user_id: uuid.UUID) -> list[BusinessMembership]:
+def list_user_memberships(
+    db: Session, *, user_id: uuid.UUID
+) -> list[BusinessMembership]:
     stmt = (
         select(BusinessMembership)
         .where(BusinessMembership.user_id == user_id)
-        .options(selectinload(BusinessMembership.business), selectinload(BusinessMembership.role))
+        .options(
+            selectinload(BusinessMembership.business),
+            selectinload(BusinessMembership.role),
+        )
         .order_by(BusinessMembership.created_at)
     )
     return list(db.execute(stmt).scalars().all())
@@ -45,7 +53,10 @@ def create_membership(
     is_default: bool = False,
 ) -> BusinessMembership:
     membership = BusinessMembership(
-        user_id=user_id, business_id=business_id, role_id=role_id, status=status,
+        user_id=user_id,
+        business_id=business_id,
+        role_id=role_id,
+        status=status,
         is_default=is_default,
     )
     db.add(membership)
@@ -79,15 +90,23 @@ def list_role_permission_keys(db: Session, *, role_id: uuid.UUID) -> set[str]:
 
 
 def ensure_role(
-    db: Session, *, name: str, display_name: str = "", description: str = "",
-    business_id: uuid.UUID | None = None, is_system: bool = True,
+    db: Session,
+    *,
+    name: str,
+    display_name: str = "",
+    description: str = "",
+    business_id: uuid.UUID | None = None,
+    is_system: bool = True,
 ) -> Role:
     existing = get_role_by_name(db, name=name, business_id=business_id)
     if existing is not None:
         return existing
     role = Role(
-        name=name, display_name=display_name or name.title(),
-        description=description, business_id=business_id, is_system=is_system,
+        name=name,
+        display_name=display_name or name.title(),
+        description=description,
+        business_id=business_id,
+        is_system=is_system,
     )
     db.add(role)
     db.flush()
@@ -104,7 +123,9 @@ def ensure_permission(db: Session, *, key: str, description: str = "") -> Permis
     return perm
 
 
-def grant_permission(db: Session, *, role_id: uuid.UUID, permission_id: uuid.UUID) -> None:
+def grant_permission(
+    db: Session, *, role_id: uuid.UUID, permission_id: uuid.UUID
+) -> None:
     existing = db.get(RolePermission, (role_id, permission_id))
     if existing is None:
         db.add(RolePermission(role_id=role_id, permission_id=permission_id))

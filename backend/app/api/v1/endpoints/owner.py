@@ -31,7 +31,8 @@ def _staff_ctx(ctx: AuthenticatedContext, request: Request):  # type: ignore[no-
 
 
 @router.get(
-    "/overview", response_model=OwnerBusinessOverview,
+    "/overview",
+    response_model=OwnerBusinessOverview,
     summary="Owner business overview",
 )
 def overview(
@@ -41,7 +42,9 @@ def overview(
     date_to: str | None = Query(default=None, max_length=32),
     preset: str | None = Query(default="30d", max_length=16),
     db: Session = Depends(deps.get_db),
-    ctx: AuthenticatedContext = Depends(deps.require_permission("owner.dashboard.read")),
+    ctx: AuthenticatedContext = Depends(
+        deps.require_permission("owner.dashboard.read")
+    ),
 ) -> OwnerBusinessOverview:
     bctx = _staff_ctx(ctx, request)
     try:
@@ -63,7 +66,9 @@ def revenue(
     date_to: str | None = Query(default=None, max_length=32),
     preset: str | None = Query(default="30d", max_length=16),
     db: Session = Depends(deps.get_db),
-    ctx: AuthenticatedContext = Depends(deps.require_permission("owner.dashboard.read")),
+    ctx: AuthenticatedContext = Depends(
+        deps.require_permission("owner.dashboard.read")
+    ),
 ) -> OwnerRevenueReport:
     bctx = _staff_ctx(ctx, request)
     try:
@@ -83,7 +88,9 @@ def leads(
     date_to: str | None = Query(default=None, max_length=32),
     preset: str | None = Query(default="30d", max_length=16),
     db: Session = Depends(deps.get_db),
-    ctx: AuthenticatedContext = Depends(deps.require_permission("owner.dashboard.read")),
+    ctx: AuthenticatedContext = Depends(
+        deps.require_permission("owner.dashboard.read")
+    ),
 ) -> OwnerLeadsReport:
     bctx = _staff_ctx(ctx, request)
     try:
@@ -95,7 +102,8 @@ def leads(
 
 
 @router.get(
-    "/combined", response_model=CombinedOverview,
+    "/combined",
+    response_model=CombinedOverview,
     summary="Combined Prime+Nest command center (OWNER/ADMIN)",
 )
 def combined(
@@ -112,7 +120,11 @@ def combined(
     try:
         start, end = owner_service._parse_window(date_from, date_to, preset)
         snapshot = owner_service.combined_overview(
-            db, ctx=bctx, scope=scope, start=start, end=end,
+            db,
+            ctx=bctx,
+            scope=scope,
+            start=start,
+            end=end,
             soon_days=soon_days,
         )
     except Exception as exc:

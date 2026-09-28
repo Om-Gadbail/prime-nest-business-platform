@@ -17,9 +17,13 @@ class Business(Base, TimestampMixin):
     __tablename__ = "businesses"
 
     id = uuid_pk()
-    slug: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, index=True)
+    slug: Mapped[str] = mapped_column(
+        String(64), unique=True, nullable=False, index=True
+    )
     name: Mapped[str] = mapped_column(String(200), nullable=False)
-    business_type: Mapped[str] = mapped_column(String(32), nullable=False, default="other")
+    business_type: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="other"
+    )
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="active")
 
     # --- Multi-business foundation (Prompt 2) ---
@@ -38,7 +42,9 @@ class Business(Base, TimestampMixin):
     # never used for database routing.
     config_ref: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
-    timezone: Mapped[str | None] = mapped_column(String(64), nullable=True, default="UTC")
+    timezone: Mapped[str | None] = mapped_column(
+        String(64), nullable=True, default="UTC"
+    )
     currency: Mapped[str | None] = mapped_column(String(8), nullable=True)
     locale: Mapped[str | None] = mapped_column(String(16), nullable=True)
 
@@ -61,7 +67,10 @@ class Business(Base, TimestampMixin):
         "BusinessMembership", back_populates="business", passive_deletes=True
     )
     settings: Mapped["BusinessSettings | None"] = relationship(
-        "BusinessSettings", back_populates="business", uselist=False, passive_deletes=True
+        "BusinessSettings",
+        back_populates="business",
+        uselist=False,
+        passive_deletes=True,
     )
     auth_sessions: Mapped[list["AuthSession"]] = relationship(
         "AuthSession", back_populates="business", passive_deletes=True

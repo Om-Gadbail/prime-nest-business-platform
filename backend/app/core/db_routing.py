@@ -237,7 +237,9 @@ def validate_business_job_scope(db: Session, *, business_id: object) -> "Busines
     try:
         bid = _uuid.UUID(str(business_id))
     except (ValueError, AttributeError, TypeError) as exc:
-        raise DatabaseRoutingError(f"Invalid job business scope: {business_id!r}.") from exc
+        raise DatabaseRoutingError(
+            f"Invalid job business scope: {business_id!r}."
+        ) from exc
     business = business_repo.get_by_id(db, bid)
     if business is None or not business.is_active or business.status != "active":
         raise DatabaseRoutingError(f"Job business scope is not active: {bid}.")

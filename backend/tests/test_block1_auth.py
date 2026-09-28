@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import time
 from datetime import datetime, timedelta, timezone
 
 import jwt as pyjwt
@@ -118,9 +117,7 @@ def test_expired_access_token_rejected(setup) -> None:
     from datetime import datetime, timezone
 
     client = setup["client"]
-    db = setup["db"]
     user = setup["user"]
-    from app.core import security
     from app.core.config import get_settings
 
     settings = get_settings()

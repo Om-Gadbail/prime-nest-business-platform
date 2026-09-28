@@ -6,7 +6,7 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
-from tests.block1_support import add_test_membership, create_test_user, make_test_session
+from tests.block1_support import make_test_session
 
 
 @pytest.fixture

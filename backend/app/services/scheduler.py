@@ -36,8 +36,15 @@ def _utcnow() -> datetime:
 def list_active_business_ids(db: Session) -> list[uuid.UUID]:
     from app.models.business import Business
 
-    rows = list(db.execute(select(Business).where(
-        Business.is_active.is_(True), Business.status == "active")).scalars().all())
+    rows = list(
+        db.execute(
+            select(Business).where(
+                Business.is_active.is_(True), Business.status == "active"
+            )
+        )
+        .scalars()
+        .all()
+    )
     return [r.id for r in rows]
 
 
@@ -53,19 +60,31 @@ def acquire_tick_lease(settings: Settings, *, tick: str, lease_seconds: int) -> 
         return True
     try:
         import redis as _redis
+
         client = _redis.Redis.from_url(url, socket_connect_timeout=2, socket_timeout=2)
-        owned = bool(client.set(f"scheduler:tick:{tick}", "1", nx=True,
-                                ex=max(30, int(lease_seconds or 120))))
+        owned = bool(
+            client.set(
+                f"scheduler:tick:{tick}",
+                "1",
+                nx=True,
+                ex=max(30, int(lease_seconds or 120)),
+            )
+        )
         if not owned:
-            logger.info("scheduler tick=%s skipped (lease held by another replica)", tick)
+            logger.info(
+                "scheduler tick=%s skipped (lease held by another replica)", tick
+            )
         return owned
     except Exception as exc:  # noqa: BLE001 - degraded mode
-        logger.warning("scheduler lease degraded (%s); running tick anyway", type(exc).__name__)
+        logger.warning(
+            "scheduler lease degraded (%s); running tick anyway", type(exc).__name__
+        )
         return True
 
 
-def run_business_sweep(db: Session, settings: Settings, *,
-                       business_id: uuid.UUID) -> dict:
+def run_business_sweep(
+    db: Session, settings: Settings, *, business_id: uuid.UUID
+) -> dict:
     """Run all due jobs for ONE business. Returns a small result summary.
 
     The job's ``business_id`` is routing information, NOT authorization: the
@@ -80,9 +99,14 @@ def run_business_sweep(db: Session, settings: Settings, *,
     from app.services import reports as reports_service
 
     started = time.monotonic()
-    summary: dict = {"business_id": str(business_id), "retried": 0,
-                     "renewals_found": 0, "renewal_messages": 0,
-                     "brief": False, "purged": 0}
+    summary: dict = {
+        "business_id": str(business_id),
+        "retried": 0,
+        "renewals_found": 0,
+        "renewal_messages": 0,
+        "brief": False,
+        "purged": 0,
+    }
     try:
         business = routing.validate_business_job_scope(db, business_id=business_id)
         summary["database_key"] = business.database_key
@@ -94,11 +118,29 @@ def run_business_sweep(db: Session, settings: Settings, *,
     try:
         # 1. Bounded replay of retrying / due-pending executions (per-business).
         try:
-            summary["retried"] = int(auto_service.retry_due(
-                db, settings, business_id=business_id, limit=int(settings.worker_batch_size)))
+            summary["retried"] = int(
+                auto_service.retry_due(
+                    db,
+                    settings,
+                    business_id=business_id,
+                    limit=int(settings.worker_batch_size),
+                )
+            )
         except Exception as exc:  # noqa: BLE001 - one stage never kills the sweep
-            logger.warning("sweep retry_due failed business=%s err=%s", business_id, exc)
+            logger.warning(
+                "sweep retry_due failed business=%s err=%s", business_id, exc
+            )
         # 2. Renewal reminders at configured offsets → automation events (idempotent).
+        try:
+            from app.services import memberships as membership_service
+
+            expired = int(membership_service.mark_expired(db, business_id=business_id))
+            summary["expired"] = expired
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "sweep mark_expired failed business=%s err=%s", business_id, exc
+            )
+            summary["expired"] = 0
         try:
             due = reports_service.renewal_scan(db, business_id=business_id)
             summary["renewals_found"] = len(due)
@@ -106,24 +148,33 @@ def run_business_sweep(db: Session, settings: Settings, *,
             for item in due:
                 try:
                     auto_service.dispatch_event(
-                        db, settings, business_id=business_id,
+                        db,
+                        settings,
+                        business_id=business_id,
                         event_type="membership.expiring",
                         entity_type="membership",
                         entity_id=uuid.UUID(str(item["membership_id"])),
-                        payload={"offset_days": item["offset_days"],
-                                 "end_date": item["end_date"]})
+                        payload={
+                            "offset_days": item["offset_days"],
+                            "end_date": item["end_date"],
+                        },
+                    )
                     sent += 1
                 except Exception:  # noqa: BLE001 - per-item safety
                     continue
             summary["renewal_messages"] = sent
         except Exception as exc:  # noqa: BLE001
-            logger.warning("sweep renewal_scan failed business=%s err=%s", business_id, exc)
+            logger.warning(
+                "sweep renewal_scan failed business=%s err=%s", business_id, exc
+            )
         # 3. Daily owner brief (upserted into daily_reports; idempotent per date).
         try:
             reports_service.build_daily_report(db, business_id=business_id)
             summary["brief"] = True
         except Exception as exc:  # noqa: BLE001
-            logger.warning("sweep daily brief failed business=%s err=%s", business_id, exc)
+            logger.warning(
+                "sweep daily brief failed business=%s err=%s", business_id, exc
+            )
         # 4. Expired idempotency retention (bounded; service owns the call).
         try:
             summary["purged"] = int(idem_service.purge_expired(db))
@@ -135,9 +186,14 @@ def run_business_sweep(db: Session, settings: Settings, *,
         logger.warning("business sweep failed business=%s err=%s", business_id, exc)
         summary["error"] = str(exc)[:300]
     summary["latency_ms"] = int((time.monotonic() - started) * 1000)
-    logger.info("sweep business=%s retried=%s renewals=%s brief=%s latency_ms=%s",
-                business_id, summary["retried"], summary["renewals_found"],
-                summary["brief"], summary["latency_ms"])
+    logger.info(
+        "sweep business=%s retried=%s renewals=%s brief=%s latency_ms=%s",
+        business_id,
+        summary["retried"],
+        summary["renewals_found"],
+        summary["brief"],
+        summary["latency_ms"],
+    )
     return summary
 
 

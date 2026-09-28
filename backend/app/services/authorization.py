@@ -33,21 +33,30 @@ def resolve_permissions(db: Session, *, role_id: uuid.UUID) -> frozenset[str]:
 
 
 def build_context(
-    db: Session, *, user: User, business: Business | None,
+    db: Session,
+    *,
+    user: User,
+    business: Business | None,
     membership: BusinessMembership | None,
 ) -> AuthenticatedContext:
     if membership is None:
         return AuthenticatedContext(
-            user=user, business=business, membership=None,
-            role_name=None, permissions=frozenset(),
+            user=user,
+            business=business,
+            membership=None,
+            role_name=None,
+            permissions=frozenset(),
         )
     # Ensure role is loaded (membership query eager-loads it, but be safe).
     role = membership.role
     role_name = role.name if role is not None else None
     permissions = resolve_permissions(db, role_id=membership.role_id)
     return AuthenticatedContext(
-        user=user, business=business, membership=membership,
-        role_name=role_name, permissions=permissions,
+        user=user,
+        business=business,
+        membership=membership,
+        role_name=role_name,
+        permissions=permissions,
     )
 
 

@@ -6,8 +6,6 @@ that client-provided business identifiers are never trusted.
 
 from __future__ import annotations
 
-import uuid
-
 import pytest
 from sqlalchemy import select
 
@@ -89,8 +87,6 @@ def test_business_endpoint_returns_own_tenant_only(env) -> None:
 def test_url_business_id_cannot_bypass_context(env) -> None:
     """There is no /business/{id} route; unknown paths must 404, not leak."""
     client = env["client"]
-    from app.models.business import Business
-
     nest_id = str(env["n"]["business"]["id"])
     # Attempt to guess a tenant-scoped URL — must not resolve to nest data.
     resp = client.get(

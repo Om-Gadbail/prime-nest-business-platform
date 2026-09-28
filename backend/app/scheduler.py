@@ -40,13 +40,18 @@ def main() -> None:
     signal.signal(signal.SIGINT, _handle_stop)
     rate_limit_service.configure_redis_limiter(settings)
     interval = max(10, int(settings.scheduler_interval_seconds or 60))
-    logger.info("scheduler starting interval=%ss redis=%s",
-                interval, "configured" if (settings.redis_url or "").strip() else "off")
+    logger.info(
+        "scheduler starting interval=%ss redis=%s",
+        interval,
+        "configured" if (settings.redis_url or "").strip() else "off",
+    )
     factory = get_session_factory()
     try:
         db = factory()
         try:
-            seed_service.seed_development(db, include_owner=settings.seed_platform_owner)
+            seed_service.seed_development(
+                db, include_owner=settings.seed_platform_owner
+            )
         finally:
             db.close()
     except Exception as exc:  # noqa: BLE001
@@ -55,7 +60,8 @@ def main() -> None:
         tick = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M")
         try:
             if scheduler_service.acquire_tick_lease(
-                    settings, tick=tick, lease_seconds=int(settings.scheduler_lease_seconds)):
+                settings, tick=tick, lease_seconds=int(settings.scheduler_lease_seconds)
+            ):
                 db = factory()
                 try:
                     results = scheduler_service.run_all_businesses(db, settings)
