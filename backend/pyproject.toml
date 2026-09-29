@@ -18,3 +18,5 @@ ignore = [
 # Block 2/3/4 tests import fixtures (b2, login_as, ...) from block2_support for
 # pytest registration AND take them as parameters — F811 by design.
 "tests/test_block*.py" = ["F811"]
+# Prompt 8 regression suite follows the same fixture-reuse convention.
+"tests/test_prompt8_security.py" = ["F811"]

@@ -1352,6 +1352,92 @@ def retry_due(
     return ran
 
 
+def requeue_dead_letter(
+    db: Session,
+    settings: Settings,
+    *,
+    business_id: uuid.UUID,
+    execution_id: uuid.UUID,
+    actor_user_id=None,
+) -> object:
+    """Controlled manual retry of a dead-letter execution (Prompt 8).
+
+    Safety contract (never bypassed):
+    - business scope: the source row must belong to ``business_id`` (else
+      ValueError("not found") — no cross-tenant oracle beyond 404).
+    - terminal state: only ``failed`` rows with exhausted budget qualify.
+    - idempotency: creates a NEW execution with a fresh idempotency key
+      (``<orig>-retry-<n>``) instead of mutating history; duplicate retry
+      clicks are idempotent via the unique (business, idem) constraint.
+    - opt-out / provider safety: NOT executed inline — the new row is
+      ``queued`` and flows through the normal ``retry_due`` path, which
+      re-checks communication preferences, eligibility, and provider state.
+    """
+    from app.models.automation import AutomationExecution
+    from app.models.ops_vocab import AUTOMATION_ACTION_TYPES
+
+    current = repo.get_execution_by_idem  # noqa: F841 (keep import surface stable)
+    from sqlalchemy import select as _select
+
+    from app.repositories.base import apply_business_scope as _scope
+
+    stmt = _scope(_select(AutomationExecution), AutomationExecution, business_id).where(
+        AutomationExecution.id == execution_id
+    )
+    row = db.execute(stmt).scalars().first()
+    if row is None:
+        raise ValueError("Execution not found.")
+    if str(row.status) != "failed":
+        raise ValueError("Only terminally failed executions can be retried.")
+    if int(row.attempt_count or 0) < int(row.max_attempts or 5):
+        raise ValueError("Execution still has retry budget; use the worker drain.")
+    stored = dict(row.input_payload or {})
+    action = dict(stored.get("action") or {})
+    if not action or str(action.get("type", "")) not in AUTOMATION_ACTION_TYPES:
+        raise ValueError("Stored action is unknown; cannot retry safely.")
+    base_idem = str(row.idempotency_key or str(row.id))[:90]
+    attempt_no = 1
+    while True:
+        candidate = f"{base_idem}-retry-{attempt_no}"[:128]
+        dup = repo.get_execution_by_idem(db, business_id=business_id, idem=candidate)
+        if dup is None:
+            break
+        attempt_no += 1
+        if attempt_no > 25:
+            raise ValueError("Retry already queued.")
+    new_row = repo.create_execution(
+        db,
+        business_id=business_id,
+        fields={
+            "rule_id": row.rule_id,
+            "event_id": row.event_id,
+            "event_type": row.event_type,
+            "status": "queued",
+            "attempt_count": 0,
+            "max_attempts": int(row.max_attempts or 5),
+            "idempotency_key": candidate,
+            "correlation_id": str(row.correlation_id or "")[:64]
+            or f"retry-{uuid.uuid4().hex[:12]}",
+            "input_payload": stored,
+            "output_payload": {},
+            "error": "",
+            "scheduled_at": None,
+        },
+    )
+    _audit(
+        db,
+        business_id=business_id,
+        action="automation.retry_queued",
+        meta={
+            "execution": str(new_row.id)[:36],
+            "source": str(row.id)[:36],
+            "rule": str(row.rule_id or "")[:36],
+        },
+        actor_user_id=actor_user_id,
+    )
+    return new_row
+
+
 class _NullRule:
     """Stand-in when the rule row was deleted (stored payload still executes)."""
 

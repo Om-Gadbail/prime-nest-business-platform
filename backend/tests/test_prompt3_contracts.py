@@ -258,8 +258,11 @@ class TestOpenAPIContract:
         # whatsapp/webhook/{business_key} (GET verify + POST inbound, pinned).
         # Prompt 7: +2 paths/+2 ops — bookings/{id}/trial-outcome,
         # communications/handoff (growth engine staff APIs).
-        assert len(paths) == 139, len(paths)
-        assert operations == 171, operations
+        # Prompt 8: +2 paths/+2 ops — automation/executions/dead-letter,
+        # automation/executions/{execution_id}/retry (dead-letter
+        # visibility + controlled manual retry; see production-reliability.md).
+        assert len(paths) == 141, len(paths)
+        assert operations == 173, operations
         # Anchors every frontend needs.
         for anchor in ("/api/v1/auth/login", "/api/v1/auth/switch-business",
                        "/api/v1/auth/businesses", "/api/v1/owner/combined",
@@ -273,7 +276,9 @@ class TestOpenAPIContract:
                         "/api/v1/bookings/{booking_id}/trial-outcome",
                         "/api/v1/communications/handoff",
                         "/api/v1/public/{slug}/leads",
-                       "/api/v1/public/{slug}/bookings", "/api/v1/leads"):
+                        "/api/v1/public/{slug}/bookings", "/api/v1/leads",
+                        "/api/v1/automation/executions/dead-letter",
+                        "/api/v1/automation/executions/{execution_id}/retry"):
             assert anchor in paths, anchor
         # No duplicate operation IDs; security schemes declared.
         op_ids = [op.get("operationId") for item in paths.values()

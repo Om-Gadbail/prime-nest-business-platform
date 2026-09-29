@@ -221,3 +221,59 @@ def enforce_auth(settings: Settings, *, request: Request, endpoint: str) -> None
         limit=settings.rate_limit_auth_requests,
         window_seconds=settings.rate_limit_auth_window_seconds,
     )
+
+
+def enforce_login_account(
+    settings: Settings, *, request: Request, account_key: str
+) -> None:
+    """Per-account login throttle (stacked on the per-IP bucket).
+
+    ``account_key`` must be a non-reversible digest (e.g. sha256 of the
+    normalized email), never the raw email — bucket keys may appear in
+    Redis key listings / logs.
+    """
+    enforce(
+        settings,
+        key=f"auth:login:account:{account_key}:{client_ip(request)}",
+        limit=int(getattr(settings, "rate_limit_login_account_requests", 10)),
+        window_seconds=int(
+            getattr(settings, "rate_limit_login_account_window_seconds", 300)
+        ),
+    )
+
+
+def enforce_owner(settings: Settings, *, request: Request, endpoint: str) -> None:
+    """Owner aggregate bucket: per IP + endpoint (expensive multi-biz reads)."""
+    enforce(
+        settings,
+        key=f"owner:{endpoint}:{client_ip(request)}",
+        limit=int(getattr(settings, "rate_limit_owner_requests", 60)),
+        window_seconds=int(getattr(settings, "rate_limit_owner_window_seconds", 60)),
+    )
+
+
+def enforce_webhook(settings: Settings, *, request: Request, endpoint: str) -> None:
+    """Webhook bucket: per IP + endpoint (vendor retries + replay abuse)."""
+    enforce(
+        settings,
+        key=f"webhook:{endpoint}:{client_ip(request)}",
+        limit=int(getattr(settings, "rate_limit_webhook_requests", 120)),
+        window_seconds=int(
+            getattr(settings, "rate_limit_webhook_window_seconds", 60)
+        ),
+    )
+
+
+def enforce_automation(
+    settings: Settings, *, request: Request, endpoint: str, business_id: object = None
+) -> None:
+    """Privileged automation-op bucket: per business (tenant-aware) + IP."""
+    biz = str(business_id or "nobiz")
+    enforce(
+        settings,
+        key=f"automation:{endpoint}:{biz}:{client_ip(request)}",
+        limit=int(getattr(settings, "rate_limit_automation_requests", 60)),
+        window_seconds=int(
+            getattr(settings, "rate_limit_automation_window_seconds", 60)
+        ),
+    )

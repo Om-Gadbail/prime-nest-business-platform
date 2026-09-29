@@ -117,6 +117,8 @@ AUDIT_ACTIONS = frozenset(
         "automation.started",
         "automation.completed",
         "automation.skipped",
+        # Prompt 8 dead-letter manual retry (append-only).
+        "automation.retry_queued",
         "communication.sent",
         "communication.skipped",
         "communication.failed",

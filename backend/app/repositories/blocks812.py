@@ -103,6 +103,36 @@ def list_executions(
     return list(db.execute(stmt.offset(off).limit(lim)).scalars().all()), total
 
 
+def get_execution(db: Session, *, business_id: uuid.UUID, execution_id: uuid.UUID):  # type: ignore[no-untyped-def]
+    """Business-scoped single execution fetch (404-safe: None when foreign)."""
+    stmt = apply_business_scope(select(AutomationExecution), AutomationExecution, business_id)
+    stmt = stmt.where(AutomationExecution.id == execution_id)
+    return db.execute(stmt).scalars().first()
+
+
+def list_dead_letter(
+    db: Session,
+    *,
+    business_id: uuid.UUID,
+    limit=None,
+    offset=None,
+):
+    """Terminally failed executions (dead-letter): status=failed, budget spent.
+
+    Business-scoped always. Ordered oldest-first so operators clear backlog
+    in arrival order. ``skipped``/``cancelled`` are terminal but NOT
+    dead-letter (they need no operator action).
+    """
+    stmt = apply_business_scope(select(AutomationExecution), AutomationExecution, business_id)
+    stmt = stmt.where(AutomationExecution.status == "failed")
+    stmt = stmt.where(AutomationExecution.attempt_count >= AutomationExecution.max_attempts)
+    stmt = stmt.order_by(AutomationExecution.created_at.asc())
+    count_stmt = select(func.count()).select_from(stmt.subquery())
+    total = int(db.execute(count_stmt).scalar() or 0)
+    lim, off = clamp_page(limit, offset)
+    return list(db.execute(stmt.offset(off).limit(lim)).scalars().all()), total
+
+
 def get_report(db: Session, *, business_id: uuid.UUID, report_date: str):
     stmt = apply_business_scope(select(DailyReport), DailyReport, business_id)
     stmt = stmt.where(DailyReport.report_date == report_date)

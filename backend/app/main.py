@@ -20,6 +20,7 @@ from app.core.logging import get_logger, setup_logging
 from app.middleware.body_size import BodySizeLimitMiddleware
 from app.middleware.error_handler import register_exception_handlers
 from app.middleware.request_id import RequestIDMiddleware
+from app.middleware.security_headers import SecurityHeadersMiddleware
 from app.schemas.health import HealthResponse, NotReadyResponse, ReadyResponse
 from app.services import health as health_service
 
@@ -64,6 +65,7 @@ def create_app() -> FastAPI:
     # request ID and never touch the JSON parser (header-only check).
     app.add_middleware(BodySizeLimitMiddleware)
     app.add_middleware(RequestIDMiddleware)
+    app.add_middleware(SecurityHeadersMiddleware)
     # Safe CORS: exact origins only; empty list = same-origin only.
     # In development, allow common local dev servers when nothing is configured.
     cors_origins = list(settings.effective_cors_origins)

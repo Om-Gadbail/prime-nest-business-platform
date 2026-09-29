@@ -143,7 +143,20 @@ def _process_inbound(
         return
     entries = payload.get("entry", []) or []
     try:
+        import time as _time
+
         for entry in entries:
+            # Replay protection: Meta signs `entry[].time` (unix seconds).
+            # Entries older than 24h ack without writes (replayed webhook).
+            try:
+                _ets = entry.get("time", None)
+                if _ets is not None:
+                    _age = _time.time() - float(_ets)
+                    if _age > 86400:
+                        logger.warning("whatsapp webhook stale entry acked rid=%s", "-")
+                        continue
+            except (TypeError, ValueError):
+                pass
             for change in entry.get("changes", []) or []:
                 value = change.get("value", {}) or {}
                 for msg in value.get("messages", []) or []:
@@ -253,7 +266,21 @@ def verify_for_business(
 async def inbound(request: Request, db: Session = Depends(deps.get_db)):
     settings = get_settings()
     rid = _request_id(request)
+    try:
+        from app.services import rate_limit as _rl
+
+        _rl.enforce_webhook(settings, request=request, endpoint="whatsapp")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        from app.api.v1.endpoints._helpers import map_service_error as _map
+
+        raise _map(exc) from exc
     raw = await request.body()
+    if len(raw) > int(getattr(settings, "max_body_bytes", 65536)) * 4:
+        # Vendor webhooks are small JSON; oversized bodies ack without parsing.
+        logger.warning("whatsapp webhook oversized body rid=%s bytes=%d", rid, len(raw))
+        return {"received": True}
     signature = request.headers.get("X-Hub-Signature-256", "")
     try:
         payload = await request.json()
@@ -335,7 +362,22 @@ async def inbound_for_business(
         )
     settings = get_settings()
     rid = _request_id(request)
+    try:
+        from app.services import rate_limit as _rl2
+
+        _rl2.enforce_webhook(settings, request=request, endpoint="whatsapp_pinned")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        from app.api.v1.endpoints._helpers import map_service_error as _map2
+
+        raise _map2(exc) from exc
     raw = await request.body()
+    if len(raw) > int(getattr(settings, "max_body_bytes", 65536)) * 4:
+        logger.warning(
+            "whatsapp pinned webhook oversized body business=%s rid=%s", key, rid
+        )
+        return {"received": True}
     signature = request.headers.get("X-Hub-Signature-256", "")
     if settings.is_production and not iconf.app_secrets(settings).get(key):
         raise HTTPException(

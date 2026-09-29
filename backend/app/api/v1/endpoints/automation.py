@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from sqlalchemy.orm import Session
 
 from app.api import deps
@@ -156,13 +156,120 @@ def list_executions(
     }
 
 
+@router.get("/executions/dead-letter", summary="List dead-letter executions")
+def dead_letter(
+    db: Session = Depends(deps.get_db),
+    ctx: AuthenticatedContext = Depends(deps.require_permission("automation.read")),
+):
+    """Operator visibility for terminally failed executions (Prompt 8).
+
+    Business-scoped: only the caller's own business is ever listed. Each item
+    carries failure reason, retry counts, timestamps, business/rule identity,
+    and correlation ID for tracing.
+    """
+    assert ctx.business is not None
+    try:
+        items, total = repo.list_dead_letter(db, business_id=ctx.business.id, limit=100)
+    except Exception as exc:
+        raise map_service_error(exc) from exc
+    return {
+        "items": [
+            {
+                "id": e.id,
+                "business_id": e.business_id,
+                "rule_id": e.rule_id,
+                "event_type": e.event_type,
+                "status": e.status,
+                "attempt_count": e.attempt_count,
+                "max_attempts": e.max_attempts,
+                "idempotency_key": e.idempotency_key,
+                "correlation_id": e.correlation_id,
+                "error": e.error,
+                "scheduled_at": e.scheduled_at.isoformat() if e.scheduled_at else None,
+                "started_at": e.started_at.isoformat() if e.started_at else None,
+                "completed_at": (
+                    e.completed_at.isoformat() if e.completed_at else None
+                ),
+            }
+            for e in items
+        ],
+        "total": total,
+        "limit": 100,
+        "offset": 0,
+    }
+
+
+@router.post(
+    "/executions/{execution_id}/retry", summary="Retry a dead-letter execution"
+)
+def retry_dead_letter(
+    execution_id: str,
+    db: Session = Depends(deps.get_db),
+    ctx: AuthenticatedContext = Depends(deps.require_permission("automation.manage")),
+):
+    """Controlled manual retry: queues a NEW execution (never rewrites history).
+
+    Inherits the caller's BusinessContext — retries cannot cross tenants,
+    cannot bypass opt-out (re-checked at drain time), and cannot duplicate
+    sends (fresh idempotency key + unique constraint).
+    """
+    assert ctx.business is not None
+    import uuid as _uuid
+
+    try:
+        eid = _uuid.UUID(str(execution_id))
+    except (ValueError, AttributeError, TypeError) as exc:
+        raise map_service_error(exc) from exc
+    try:
+        row = auto_service.requeue_dead_letter(
+            db,
+            get_settings(),
+            business_id=ctx.business.id,
+            execution_id=eid,
+            actor_user_id=ctx.user.id,
+        )
+        new_id = row.id
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        raise map_service_error(exc) from exc
+    # Re-fetch post-commit (never refresh a possibly-rolled-back instance).
+    try:
+        fresh = repo.get_execution(
+            db, business_id=ctx.business.id, execution_id=new_id
+        )
+    except Exception as exc:
+        raise map_service_error(exc) from exc
+    if fresh is None:
+        raise map_service_error(ValueError("Retry could not be queued."))
+    row = fresh
+    return {
+        "id": row.id,
+        "status": row.status,
+        "idempotency_key": row.idempotency_key,
+        "correlation_id": row.correlation_id,
+    }
+
+
 @router.post("/trigger", summary="Trigger automation for an event (tests/ops)")
 def trigger(
     payload: TriggerIn,
+    request: Request,
     db: Session = Depends(deps.get_db),
     ctx: AuthenticatedContext = Depends(deps.require_permission("automation.manage")),
 ):
     assert ctx.business is not None
+    try:
+        from app.services import rate_limit as _rl
+
+        _rl.enforce_automation(
+            get_settings(),
+            request=request,
+            endpoint="trigger",
+            business_id=ctx.business.id,
+        )
+    except Exception as exc:
+        raise map_service_error(exc) from exc
     try:
         execs = auto_service.dispatch_event(
             db,
@@ -183,10 +290,22 @@ def trigger(
 
 @router.post("/scheduler/run", summary="Run due/retried automation (bounded)")
 def scheduler_run(
+    request: Request,
     db: Session = Depends(deps.get_db),
     ctx: AuthenticatedContext = Depends(deps.require_permission("automation.manage")),
 ):
     assert ctx.business is not None
+    try:
+        from app.services import rate_limit as _rl
+
+        _rl.enforce_automation(
+            get_settings(),
+            request=request,
+            endpoint="scheduler_run",
+            business_id=ctx.business.id,
+        )
+    except Exception as exc:
+        raise map_service_error(exc) from exc
     try:
         ran = auto_service.retry_due(db, get_settings(), business_id=ctx.business.id)
         db.commit()

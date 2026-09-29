@@ -9046,6 +9046,77 @@
         }
       }
     },
+    "/api/v1/automation/executions/dead-letter": {
+      "get": {
+        "tags": [
+          "automation"
+        ],
+        "summary": "List dead-letter executions",
+        "description": "Operator visibility for terminally failed executions (Prompt 8).\n\nBusiness-scoped: only the caller's own business is ever listed. Each item\ncarries failure reason, retry counts, timestamps, business/rule identity,\nand correlation ID for tracing.",
+        "operationId": "dead_letter_api_v1_automation_executions_dead_letter_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/api/v1/automation/executions/{execution_id}/retry": {
+      "post": {
+        "tags": [
+          "automation"
+        ],
+        "summary": "Retry a dead-letter execution",
+        "description": "Controlled manual retry: queues a NEW execution (never rewrites history).\n\nInherits the caller's BusinessContext \u2014 retries cannot cross tenants,\ncannot bypass opt-out (re-checked at drain time), and cannot duplicate\nsends (fresh idempotency key + unique constraint).",
+        "operationId": "retry_dead_letter_api_v1_automation_executions__execution_id__retry_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "execution_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Execution Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/automation/trigger": {
       "post": {
         "tags": [

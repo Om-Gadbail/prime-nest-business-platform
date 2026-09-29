@@ -116,6 +116,14 @@ def login(
     settings = get_settings()
     try:
         rate_limit_service.enforce_auth(settings, request=request, endpoint="login")
+        import hashlib as _hashlib
+
+        _acct = _hashlib.sha256(
+            str(payload.email or "").strip().lower().encode()
+        ).hexdigest()[:32]
+        rate_limit_service.enforce_login_account(
+            settings, request=request, account_key=_acct
+        )
     except rate_limit_service.RateLimitedError as exc:
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,

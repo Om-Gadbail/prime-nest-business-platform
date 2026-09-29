@@ -127,6 +127,18 @@ class Settings(BaseSettings):
     # Generous bucket for auth endpoints (login/refresh) — abuse extension point.
     rate_limit_auth_requests: int = Field(default=30, ge=1, le=100000)
     rate_limit_auth_window_seconds: int = Field(default=300, ge=1, le=86400)
+    # Prompt 8: per-surface buckets (all configurable, Redis-backed in prod).
+    # Owner aggregates are expensive (multi-business); webhooks face vendor
+    # retries; automation trigger/scheduler-run are privileged ops.
+    rate_limit_owner_requests: int = Field(default=60, ge=1, le=100000)
+    rate_limit_owner_window_seconds: int = Field(default=60, ge=1, le=86400)
+    rate_limit_webhook_requests: int = Field(default=120, ge=1, le=100000)
+    rate_limit_webhook_window_seconds: int = Field(default=60, ge=1, le=86400)
+    rate_limit_automation_requests: int = Field(default=60, ge=1, le=100000)
+    rate_limit_automation_window_seconds: int = Field(default=60, ge=1, le=86400)
+    # Prompt 8: per-account login throttle (stacked on the per-IP bucket).
+    rate_limit_login_account_requests: int = Field(default=10, ge=1, le=100000)
+    rate_limit_login_account_window_seconds: int = Field(default=300, ge=1, le=86400)
 
     # --- Block 2: API payload limits ---
     # Hard pre-parse cap enforced by middleware on Content-Length for ALL
@@ -278,6 +290,23 @@ class Settings(BaseSettings):
         allowed = {"HS256", "HS384", "HS512"}
         if v not in allowed:
             raise ValueError(f"JWT_ALGORITHM must be one of {sorted(allowed)}.")
+        return v
+
+    @field_validator("auth_cookie_samesite")
+    @classmethod
+    def validate_cookie_samesite(cls, v: str, info: object) -> str:
+        # SameSite=None requires Secure cookies (browsers reject otherwise);
+        # fail fast so a misconfigured production never ships lax security.
+        env = _sibling_field(info, "app_env")
+        secure_raw = ""
+        data = getattr(info, "data", None)
+        if isinstance(data, dict):
+            secure_raw = str(data.get("auth_cookie_secure", ""))
+        if v == "none" and secure_raw.lower() not in ("true", "1", "yes"):
+            if env == "production":
+                raise ValueError(
+                    "AUTH_COOKIE_SAMESITE=none requires AUTH_COOKIE_SECURE=true."
+                )
         return v
 
     @property

@@ -37,6 +37,25 @@ def _staff_ctx(ctx: AuthenticatedContext, request: Request):  # type: ignore[no-
     return BusinessResolver.for_staff(ctx, request_id=request_id(request))
 
 
+def _enforce_owner_limit(request: Request, endpoint: str) -> None:
+    """Bounded owner aggregates (Prompt 8): 429 instead of overload."""
+    from fastapi import HTTPException as _HTTPException
+    from fastapi import status as _status
+
+    from app.core.config import get_settings as _settings
+    from app.services import rate_limit as _rl
+    from app.services.errors import RateLimitedError as _RateLimited
+
+    try:
+        _rl.enforce_owner(_settings(), request=request, endpoint=endpoint)
+    except _RateLimited as exc:
+        raise _HTTPException(
+            status_code=_status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=str(exc),
+            headers={"Retry-After": str(exc.retry_after)},
+        ) from exc
+
+
 def _audit_scope(
     db: Session,
     bctx,  # type: ignore[no-untyped-def]
@@ -82,6 +101,7 @@ def overview(
         deps.require_permission("owner.dashboard.read")
     ),
 ) -> OwnerBusinessOverview:
+    _enforce_owner_limit(request, "overview")
     bctx = _staff_ctx(ctx, request)
     try:
         start, end = owner_service._parse_window(date_from, date_to, preset)
@@ -164,6 +184,7 @@ def combined(
     db: Session = Depends(deps.get_db),
     ctx: AuthenticatedContext = Depends(deps.require_permission("owner.combined.read")),
 ) -> CombinedOverview:
+    _enforce_owner_limit(request, "combined")
     bctx = _staff_ctx(ctx, request)
     try:
         start, end = owner_service._parse_window(date_from, date_to, preset)
