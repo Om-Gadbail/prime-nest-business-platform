@@ -24,7 +24,7 @@ class GeminiStructuredProvider(AIProvider):
 
     def __init__(self) -> None:
         settings = get_settings()
-        self.model = (settings.gemini_model or "gemini-2.5-flash").strip()
+        self.model = (settings.gemini_model or "gemini-3.6-flash").strip()
         self._api_key = (settings.gemini_api_key or "").strip()
         self._timeout = int(settings.ai_timeout_seconds or 20)
 
@@ -45,15 +45,21 @@ class GeminiStructuredProvider(AIProvider):
         )
         url = (
             f"https://generativelanguage.googleapis.com/v1beta/models/"
-            f"{self.model}:generateContent?key={self._api_key}"
+            f"{self.model}:generateContent"
         )
+        # Auth via header (never the ?key= query string: URLs are echoed
+        # into httpx access logs, which would leak the credential).
+        headers = {"x-goog-api-key": self._api_key}
         payload = {
             "contents": [{"role": "user", "parts": [{"text": prompt}]}],
             "generationConfig": {"temperature": 0.2, "maxOutputTokens": 1024},
         }
         try:
             resp = httpx.post(
-                url, json=payload, timeout=float(timeout_seconds or self._timeout)
+                url,
+                json=payload,
+                headers=headers,
+                timeout=float(timeout_seconds or self._timeout),
             )
         except Exception as exc:
             raise AIProviderError(f"Gemini transport failed: {exc}") from exc

@@ -137,8 +137,11 @@ class GeminiChatProvider(ChatProvider):
             raise AIProviderError("Gemini is not configured (GEMINI_API_KEY missing).")
         url = (
             f"https://generativelanguage.googleapis.com/v1beta/models/"
-            f"{self.model}:generateContent?key={api_key}"
+            f"{self.model}:generateContent"
         )
+        # Auth via header (never the ?key= query string: URLs are echoed
+        # into httpx access logs, which would leak the credential).
+        headers = {"x-goog-api-key": api_key}
         contents: list[dict] = []
         for m in messages[-20:]:
             role = "user" if m.get("role") in ("visitor", "user", "tool") else "model"
@@ -172,7 +175,9 @@ class GeminiChatProvider(ChatProvider):
         for attempt in range(1, self.MAX_ATTEMPTS + 1):
             started = time.monotonic()
             try:
-                resp = httpx.post(url, json=payload, timeout=float(timeout_seconds))
+                resp = httpx.post(
+                    url, json=payload, headers=headers, timeout=float(timeout_seconds)
+                )
             except Exception as exc:
                 last_error = exc
                 latency = int((time.monotonic() - started) * 1000)
