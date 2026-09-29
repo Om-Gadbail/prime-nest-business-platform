@@ -54,7 +54,12 @@ class MessagingError(Exception):
 
 
 class LogProvider(MessagingProvider):
-    """Demo/test provider: returns a deterministic local message id."""
+    """Demo/test provider: returns a deterministic local message id.
+
+    Nothing leaves the machine: status is honestly "simulated", never
+    "sent"/"delivered", so no caller can mistake a log record for a real
+    WhatsApp delivery.
+    """
 
     name = "log"
 
@@ -70,7 +75,7 @@ class LogProvider(MessagingProvider):
         return SendResult(
             provider="log",
             provider_message_id=mid,
-            status="sent",
+            status="simulated",
             raw={"to": to, "preview": body[:160]},
         )
 
