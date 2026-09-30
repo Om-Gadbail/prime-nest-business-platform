@@ -101,6 +101,7 @@ def chat_turn(
         )
     started = time.monotonic()
     status, error_text, tool_trace = "success", "", []
+    _transient_should_escalate = False
     try:
         specs = ai_tools.tool_specs(caller=caller)
         first = provider.chat(
@@ -167,8 +168,28 @@ def chat_turn(
                 else gateway.FALLBACK_PUBLIC
             )
     except AIProviderError as exc:
-        status, error_text = "error", str(exc)[:500]
-        reply, model = gateway.FALLBACK_PUBLIC, provider.model
+        # MASTER FIX §5/§7/§8: transient Gemini failures (429 quota, 5xx,
+        # transport) must NOT pause two-way WhatsApp chat and must NOT drop
+        # to a generic message when real business data can answer. Build a
+        # tool-grounded reply from live DB rows (plans/hours/location) so
+        # "What are your plans?" still returns ₹1,500/₹4,000/₹7,500/₹12,000
+        # even when the LLM quota is exhausted. Only explicit human-handoff
+        # intents escalate; quota errors never pause future turns.
+        status, error_text = "fallback", str(exc)[:500]
+        try:
+            reply, tool_trace, _transient_escalated = _transient_tool_fallback(
+                db,
+                business_id=business_id,
+                business_name=business_name,
+                channel=channel,
+                visitor_key=visitor_key,
+                message=message,
+            )
+            model = provider.model
+            _transient_should_escalate = bool(_transient_escalated)
+        except Exception:  # noqa: BLE001 - fallback builder never breaks the turn
+            reply, model = gateway.FALLBACK_PUBLIC, provider.model
+            _transient_should_escalate = False
     latency_ms = int((time.monotonic() - started) * 1000)
     repo.add_ai_message(
         db,
@@ -197,7 +218,11 @@ def chat_turn(
         db.flush()
     except Exception:  # noqa: BLE001 - run audit must never break the reply
         pass
-    escalated = status == "error" or _needs_escalation(reply, tool_trace)
+    escalated = (
+        status == "error"
+        or bool(_transient_should_escalate)
+        or _needs_escalation(reply, tool_trace)
+    )
     if escalated and conv is not None:
         conv.escalated = True
         conv.status = "escalated"
@@ -236,6 +261,174 @@ def _fallback_from_tools(tool_results: list) -> str:
             if result.get("status") == "requested":
                 return result.get("message", "Request received.")
     return gateway.FALLBACK_PUBLIC
+
+
+def _transient_tool_fallback(
+    db,
+    *,
+    business_id,
+    business_name: str,
+    channel: str,
+    visitor_key: str,
+    message: str,
+) -> tuple[str, list, bool]:
+    """Tool-grounded reply when Gemini is transiently unavailable (429/5xx).
+
+    Uses the SAME allowlisted PUBLIC tools as the live path, so prices /
+    hours / location are always real DB rows — never invented. No Demo
+    prefix (the provider IS configured; only this attempt was throttled).
+    Returns (reply, tool_trace, escalated). Only explicit human-handoff
+    intents escalate; quota errors never pause future turns.
+    """
+    lowered = (message or "").strip().lower()
+    tool_trace: list[dict] = []
+    name = (business_name or "this business").strip() or "this business"
+
+    def _tool(tool_name: str, args: dict | None = None) -> dict:
+        try:
+            result = ai_tools.execute_tool(
+                db,
+                business_id=business_id,
+                tool_name=tool_name,
+                args=dict(args or {}),
+                caller="public",
+            )
+            tool_trace.append({"tool": tool_name, "status": "success"})
+            return result if isinstance(result, dict) else {}
+        except Exception:  # noqa: BLE001 - one bad tool never breaks fallback
+            tool_trace.append({"tool": tool_name, "status": "error"})
+            return {}
+
+    # Human handoff: create staff task, escalate (correct pause per §9).
+    if any(h in lowered for h in _HUMAN_HINTS):
+        try:
+            from app.services import growth_engine as _growth
+
+            _growth.create_handoff(
+                db,
+                business_id=business_id,
+                customer_name="",
+                customer_phone=visitor_key if channel == "whatsapp" else "",
+                reason=f"Visitor asked for human help: {message[:200]}",
+            )
+            db.flush()
+        except Exception:  # noqa: BLE001 - handoff task best-effort
+            pass
+        tool_trace.append({"tool": "create_staff_followup", "status": "success"})
+        return (
+            f"Of course — I've asked our {name} team to contact you personally. "
+            "Someone will reach out shortly. Is there anything else I can help with meanwhile?",
+            tool_trace,
+            True,
+        )
+
+    # Plans / pricing (real catalogue only).
+    if any(
+        k in lowered
+        for k in (
+            "plan", "price", "pricing", "cost", "much", "monthly", "annual",
+            "quarterly", "fees", "charges", "₹", "rs", "membership",
+        )
+    ):
+        plans = _tool("get_membership_plans").get("plans") or []
+        if plans:
+            lines = [f"• {p.get('name')}: ₹{p.get('price')}" for p in plans[:6]]
+            return (
+                f"Here are the current {name} plans:\n"
+                + "\n".join(lines)
+                + "\nWould you like help choosing a plan or booking a free trial?",
+                tool_trace,
+                False,
+            )
+
+    # Location.
+    if any(
+        k in lowered
+        for k in ("where", "located", "location", "address", "reach", "map", "directions")
+    ):
+        loc = _tool("get_business_location")
+        addr = str(loc.get("address", "") or "").strip()
+        map_url = str(loc.get("map_url", "") or "").strip()
+        if addr and addr.lower() != "address not configured":
+            suffix = f" Map: {map_url}" if map_url else ""
+            return (
+                f"📍 {name} is at {addr}.{suffix} Want directions or trial details?",
+                tool_trace,
+                False,
+            )
+
+    # Hours.
+    if any(k in lowered for k in ("timing", "timings", "hours", "open", "close", "when")):
+        hours = _tool("get_business_hours").get("hours") or {}
+        weekly = hours.get("weekly") or {} if isinstance(hours, dict) else {}
+        if weekly:
+            parts = []
+            for day in (
+                "monday", "tuesday", "wednesday", "thursday",
+                "friday", "saturday", "sunday",
+            ):
+                cfg = weekly.get(day) or {}
+                if cfg.get("closed") is True:
+                    parts.append(f"{day[:3].title()}: closed")
+                elif cfg.get("open"):
+                    parts.append(f"{day[:3].title()}: {cfg.get('open')}-{cfg.get('close', '')}")
+            detail = "; ".join(parts) if parts else "Please contact the team for hours."
+            return (
+                f"🕒 {name} hours — {detail}. Want to book a visit?",
+                tool_trace,
+                False,
+            )
+
+    # Trial / booking intent: trigger the existing lead workflow best-effort,
+    # then ask for the slot details (same as the live path would).
+    if any(
+        k in lowered
+        for k in ("trial", "visit", "book", "join", "free trial", "demo")
+    ):
+        try:
+            _tool(
+                "create_lead",
+                {
+                    "phone": visitor_key if channel == "whatsapp" else "",
+                    "message": message[:500],
+                    "interest": "Free trial",
+                },
+            )
+        except Exception:  # noqa: BLE001 - lead creation best-effort
+            pass
+        return (
+            f"Great — I can help you book a free trial at {name}! "
+            "Just share your name and preferred day/time (e.g. 'Ravi, tomorrow 7 AM'), "
+            "and our team will confirm your slot. Which day works best for you?",
+            tool_trace,
+            False,
+        )
+
+    # Greeting / about-prime / default: friendly menu from configured data.
+    profile = _tool("get_business_profile")
+    loc = _tool("get_business_location")
+    display = str(profile.get("name", "") or name)
+    addr = str(loc.get("address", "") or "").strip()
+    loc_line = (
+        f"\n📍 {addr}" if addr and addr.lower() != "address not configured" else ""
+    )
+    if any(k in lowered for k in ("hi", "hello", "hey", "about", "prime", "info")) or not lowered:
+        return (
+            f"Hi! 👋 Welcome to {display}! I can help you with:"
+            "\n• Membership plans\n• Free trial / trial booking\n• Gym timings"
+            "\n• Facilities and services\n• Location and contact details"
+            f"{loc_line}"
+            "\nWould you like to know about our membership plans or book a trial?",
+            tool_trace,
+            False,
+        )
+    return (
+        f"Thanks for reaching out to {display}! I can help with membership plans, "
+        f"free trial booking, timings, and location.{loc_line} "
+        "What would you like to know?",
+        tool_trace,
+        False,
+    )
 
 
 _ESCALATION_HINTS = (
@@ -439,10 +632,23 @@ def _noop_demo_turn(
             is_escalated=False,
         )
 
-    # Trial / booking intent.
+    # Trial / booking intent (MASTER FIX §5/§13: trigger the existing
+    # lead workflow best-effort so "I want a free trial" creates a lead even
+    # in demo/noop mode; the live Gemini path calls create_lead via tools).
     if any(k in lowered for k in (
         "trial", "visit", "book", "join", "come tomorrow", "free trial", "demo",
     )):
+        try:
+            _tool(
+                "create_lead",
+                {
+                    "phone": visitor_key if channel == "whatsapp" else "",
+                    "message": message[:500],
+                    "interest": "Free trial",
+                },
+            )
+        except Exception:  # noqa: BLE001 - lead creation best-effort
+            pass
         return _persist(
             _DEMO_PREFIX
             + f"Great — I can help you book a trial at {name}! "

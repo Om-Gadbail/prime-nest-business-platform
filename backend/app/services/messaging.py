@@ -295,18 +295,50 @@ class WhatsAppCloudProvider(MessagingProvider):
             if status_code >= 400 or status_code == 0:
                 # Non-retryable rejection (bad template/recipient/auth): fail
                 # fast with a normalized, credential-free error. Attempt to
-                # surface Meta's error code/message (safe subset) without
-                # ever including tokens or secrets.
+                # surface Meta's error code/subcode/type/message (safe subset)
+                # without ever including tokens or secrets.
+                # MASTER FIX §2/§14: auth failures MUST surface META_AUTH_INVALID
+                # explicitly (never silent, never false-delivered) so operators
+                # know to refresh PASTE a valid token / fix permissions instead
+                # of debugging business logic. Recipient-allowlist rejections
+                # (code 131030 on Meta test numbers) stay distinct from auth.
                 detail = ""
+                code = ""
+                subcode = ""
+                etype = ""
+                message = ""
                 try:
                     data = resp.json() if hasattr(resp, "json") else {}
                     err = (data.get("error") or {}) if isinstance(data, dict) else {}
                     code = str(err.get("code", ""))[:16]
+                    subcode = str(err.get("error_subcode", "") or "")[:16]
+                    etype = str(err.get("type", ""))[:32]
                     message = str(err.get("message", ""))[:200]
-                    if code or message:
-                        detail = f" code={code} msg={message}".rstrip()
+                    parts = []
+                    if code:
+                        parts.append(f"code={code}")
+                    if subcode:
+                        parts.append(f"subcode={subcode}")
+                    if message:
+                        parts.append(f"msg={message}")
+                    if parts:
+                        detail = " " + " ".join(parts)
                 except Exception:  # noqa: BLE001 - error parsing never breaks normalization
                     detail = ""
+                lowered_msg = (message or "").lower()
+                is_auth_failure = (
+                    status_code in (401, 403)
+                    or code in ("190", "102")
+                    or (code == "10" and "permission" in lowered_msg)
+                    or ("invalid oauth" in lowered_msg)
+                    or ("session has expired" in lowered_msg)
+                    or ("expired" in lowered_msg and "token" in lowered_msg)
+                )
+                if is_auth_failure:
+                    raise MessagingError(
+                        f"META_AUTH_INVALID: WhatsApp rejected the message "
+                        f"(HTTP {status_code}).{detail}"
+                    )
                 raise MessagingError(
                     f"WhatsApp rejected the message (HTTP {status_code}).{detail}"
                 )

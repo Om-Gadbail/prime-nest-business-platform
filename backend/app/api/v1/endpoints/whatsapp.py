@@ -307,6 +307,26 @@ def _maybe_ai_reply(
         reply = str(result.get("reply", "") or "").strip()
         if not reply:
             return
+        # MASTER FIX §6/§7/§13: link the AI outbound to the SAME conversation
+        # as the inbound (external_id=phone) so the timeline shows
+        # inbound + outbound together. Without this the outbound row is
+        # orphaned (conversation_id NULL) and two-way history breaks.
+        conversation_id = None
+        try:
+            from app.repositories import blocks812 as _brepo_conv
+
+            conv = _brepo_conv.get_or_create_conversation(
+                db,
+                business_id=business.id,
+                channel="whatsapp",
+                external_id=phone[:200],
+                subject_name=phone[:200],
+                subject_phone=phone[:32],
+            )
+            db.flush()
+            conversation_id = getattr(conv, "id", None)
+        except Exception:  # noqa: BLE001 - linking best-effort; send still attempted
+            conversation_id = None
         try:
             comms.send_message(
                 db,
@@ -317,10 +337,32 @@ def _maybe_ai_reply(
                 body=reply[:4000],
                 sender="ai:whatsapp",
                 ai_run_id=None,
+                conversation_id=conversation_id,
                 idempotency_key=f"wa-ai-{inbound_mid}"[:128] if inbound_mid else "",
             )
         except ValueError:
             # Opt-out raced the reply (or empty body): skip silently.
+            return
+        except Exception as exc:  # noqa: BLE001 - provider failures stay auditable, ack intact
+            # MASTER FIX §2/§6: never swallow provider errors silently and
+            # never claim delivered. send_message already persisted an honest
+            # FAILED row (with conversation link + META_AUTH_INVALID when the
+            # Meta credential is the cause). Audit it for operators.
+            try:
+                err_text = str(exc)[:300]
+                _audit_best_effort(
+                    db,
+                    business_id=business.id,
+                    action="whatsapp.ai_failed",
+                    meta={
+                        "to": phone[:16],
+                        "inbound": (inbound_mid or "")[:64],
+                        "error": err_text,
+                        "auth_invalid": "META_AUTH_INVALID" in err_text,
+                    },
+                )
+            except Exception:  # noqa: BLE001 - audit best-effort
+                pass
             return
         _audit_best_effort(
             db,

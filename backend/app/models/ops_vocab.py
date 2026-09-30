@@ -129,6 +129,7 @@ AUDIT_ACTIONS = frozenset(
         "whatsapp.inbound",
         "whatsapp.ai_replied",
         "whatsapp.ai_skipped",
+        "whatsapp.ai_failed",
         "whatsapp.ai_resumed",
         "ai.generation_requested",
         "ai.generation_succeeded",
