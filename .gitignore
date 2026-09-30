@@ -11,6 +11,9 @@ venv/
 # Docker
 .pgdata/
 
+# Local database backups (contain operational data; never commit)
+backups/
+
 # OS / editors
 .DS_Store
 Thumbs.db
