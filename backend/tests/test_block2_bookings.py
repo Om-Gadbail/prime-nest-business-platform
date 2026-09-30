@@ -100,13 +100,14 @@ def test_booking_isolation_and_permissions(b2) -> None:
         f"/api/v1/bookings/{bid}", json={"title": "hijack"}, headers=h_nest
     ).status_code == 404
     assert b2["client"].post(f"/api/v1/bookings/{bid}/confirm", headers=h_nest).status_code == 404
-    # Staff (no bookings.update) cannot confirm; viewer cannot create.
+    # Release change (owner-ready): STAFF confirms trials (bookings.update);
+    # viewer cannot create.
     staff = login_as(
         b2["client"], b2["db"], email="bk-staff@example.com", slug="prime", role="STAFF"
     )
     sh = auth_headers(staff["access_token"])
     assert _create(b2["client"], sh).status_code == 201  # STAFF can create
-    assert b2["client"].post(f"/api/v1/bookings/{bid}/confirm", headers=sh).status_code == 403
+    assert b2["client"].post(f"/api/v1/bookings/{bid}/confirm", headers=sh).status_code == 200
     viewer = login_as(
         b2["client"], b2["db"], email="bk-viewer@example.com", slug="prime", role="VIEWER"
     )

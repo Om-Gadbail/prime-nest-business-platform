@@ -184,7 +184,8 @@ def test_crm_permissions(b2) -> None:
         b2["client"], b2["db"], email="crm-staff@example.com", slug="prime", role="STAFF"
     )
     sh = auth_headers(staff["access_token"])
-    # STAFF: contacts read/create, customers read only.
+    # Release change (owner-ready): STAFF does frontline CRM — contacts
+    # read/create/update, customers read/create/update.
     assert b2["client"].get("/api/v1/contacts", headers=sh).status_code == 200
     resp = b2["client"].post(
         "/api/v1/contacts", json={"first_name": "Staff Made"}, headers=sh
@@ -193,8 +194,8 @@ def test_crm_permissions(b2) -> None:
     assert b2["client"].get("/api/v1/customers", headers=sh).status_code == 200
     assert b2["client"].post(
         "/api/v1/customers", json={"contact_id": resp.json()["id"]}, headers=sh
-    ).status_code == 403
-    # STAFF cannot update contacts either.
+    ).status_code == 201
+    # STAFF can update contacts.
     assert b2["client"].patch(
         f"/api/v1/contacts/{resp.json()['id']}", json={"notes": "x"}, headers=sh
-    ).status_code == 403
+    ).status_code == 200

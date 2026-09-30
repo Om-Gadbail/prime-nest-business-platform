@@ -125,18 +125,24 @@ def test_staff_mutation_boundaries(b57) -> None:  # noqa: F811
     # Allowed: register members/memberships/payments/check-ins.
     assert c.post("/api/v1/members", json={"display_name": "Desk"},
                   headers=s).status_code == 201
-    # Denied: updates, refunds, seats, plans, renewals-create, approvals-decide.
+    # Release change (owner-ready): frontline STAFF progresses operational
+    # work — member/membership/payment updates, seat allocation, renewals.
     assert c.patch(f"/api/v1/members/{ids['member']}", json={"notes": "x"},
-                   headers=s).status_code == 403
+                   headers=s).status_code == 200
     assert c.post(f"/api/v1/memberships/{ids['membership']}/status",
                   json={"status": "cancelled", "cancel_reason": "x"},
-                  headers=s).status_code == 403
+                  headers=s).status_code == 200
     assert c.post(f"/api/v1/payments/{ids['payment']}/status",
-                  json={"status": "paid"}, headers=s).status_code == 403
+                  json={"status": "paid"}, headers=s).status_code == 200
     assert c.post("/api/v1/seats", json={"seat_number": "ZZ-8"},
-                  headers=s).status_code == 403
+                  headers=s).status_code == 201
     assert c.post("/api/v1/renewals", json={"membership_id": ids["membership"]},
-                  headers=s).status_code == 403
+                  headers=s).status_code == 201
+    # Still denied: refunds, plan management, approvals-decide, owner views.
+    assert c.post(f"/api/v1/payments/{ids['payment']}/refund",
+                  json={"reason": "x"}, headers=s).status_code == 403
+    assert c.post("/api/v1/membership-plans", json={"code": "x", "name": "x"},
+                  headers=s).status_code in (403, 404, 405)
     assert c.post(f"/api/v1/approvals/{ids['approval']}/decide",
                   json={"status": "approved"}, headers=s).status_code == 403
     assert c.get("/api/v1/owner/combined", headers=s).status_code == 403

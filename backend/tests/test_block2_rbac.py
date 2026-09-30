@@ -8,11 +8,13 @@ from tests.block2_support import STAFF_ROLES, auth_headers, b2, login_as  # noqa
 
 # Expected access per role: (leads_r, leads_w, bookings_r, bookings_w,
 # contacts_r, contacts_w, customers_r, customers_w, notif_r, notif_update, ai)
+# Release change (owner-ready): STAFF is frontline-operational — creates AND
+# updates customers/contacts/notifications; still no ai.read (assist only).
 MATRIX = {
     "OWNER":   (200, 201, 200, 201, 200, 201, 200, 201, 200, 200, 200),
     "ADMIN":   (200, 201, 200, 201, 200, 201, 200, 201, 200, 200, 200),
     "MANAGER": (200, 201, 200, 201, 200, 201, 200, 201, 200, 200, 200),
-    "STAFF":   (200, 201, 200, 201, 200, 201, 200, 403, 200, 403, 403),
+    "STAFF":   (200, 201, 200, 201, 200, 201, 200, 201, 200, 200, 403),
     "VIEWER":  (200, 403, 200, 403, 200, 403, 200, 403, 200, 403, 403),
 }
 
@@ -75,7 +77,8 @@ def test_new_permissions_in_seed_matrix(b2) -> None:
     ):
         assert key in ROLE_PERMISSIONS["OWNER"]
         assert key in ROLE_PERMISSIONS["MANAGER"]
-    assert "customers.create" not in ROLE_PERMISSIONS["STAFF"]
+    assert "customers.create" in ROLE_PERMISSIONS["STAFF"]
+    assert "notifications.update" in ROLE_PERMISSIONS["STAFF"]
     assert "ai.read" not in ROLE_PERMISSIONS["VIEWER"]
     # DB state matches the matrix for a live manager token.
     tokens = login_as(

@@ -113,7 +113,7 @@ def test_dedupe_and_preferences(b2) -> None:
     )
     assert suppressed is None
     # Manager (notifications.update) can set own preference via API;
-    # staff (read-only) gets 403.
+    # release change (owner-ready): frontline STAFF can too (own prefs).
     manager = login_as(
         b2["client"], b2["db"], email="ntf-pref-manager@example.com",
         slug="prime", role="MANAGER",
@@ -132,7 +132,7 @@ def test_dedupe_and_preferences(b2) -> None:
     assert b2["client"].put(
         "/api/v1/notifications/preferences/system", json={"enabled": True},
         headers=auth_headers(staff["access_token"]),
-    ).status_code == 403
+    ).status_code == 200
     # Unknown preference type rejected.
     assert b2["client"].put(
         "/api/v1/notifications/preferences/sms-blast", json={"enabled": True},

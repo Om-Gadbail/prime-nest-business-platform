@@ -74,10 +74,12 @@ def test_staff_limited_permissions(env) -> None:
     me = env["client"].get("/api/v1/auth/me", headers=_h(env["tokens"]["STAFF"])).json()
     assert "leads.create" in me["permissions"]
     assert "settings.update" not in me["permissions"]
-    # Blocks 5-7: front-desk STAFF registers operational members (member
-    # profiles), but cannot update them or touch owner/analytics surfaces.
+    # Release change (owner-ready): frontline STAFF registers member
+    # profiles AND updates them (follow-up/renewal desk work), but cannot
+    # touch owner/analytics surfaces.
     assert "members.create" in me["permissions"]
-    assert "members.update" not in me["permissions"]
+    assert "members.update" in me["permissions"]
+    assert "leads.update" in me["permissions"]
     assert "owner.combined.read" not in me["permissions"]
 
 
