@@ -131,7 +131,7 @@ def _resolve_business_for_payload(db: Session, settings: Settings, payload: dict
     return None
 
 
-OPT_OUT_KEYWORDS = frozenset({"stop", "unsubscribe", "opt out", "opt-out", "cancel", "quit"})
+OPT_OUT_KEYWORDS = frozenset({"stop", "unsubscribe", "opt out", "opt-out", "cancel", "quit", "end"})
 OPT_IN_KEYWORDS = frozenset({"start", "yes", "opt in", "opt-in", "subscribe", "unstop"})
 
 # Meta delivery/read status values we persist verbatim (truncated). Anything

@@ -80,6 +80,25 @@ def chat_turn(
     messages = [{"role": m.role, "content": m.content} for m in history]
     system = gateway.build_system_prompt(mode=mode, business_name=business_name)
     provider = gateway.get_chat_provider(settings)
+    # Demo-safe deterministic path: when the real LLM is not configured
+    # (noop fake), answer from REAL business data via allowlisted tools so
+    # the Prime owner demo still feels like a live front-desk assistant.
+    # The reply keeps the "Demo assistant" label so contract tests and the
+    # honest fallback stay intact; no prices/hours/location are invented.
+    if provider.name == "noop":
+        return _noop_demo_turn(
+            db,
+            business_id=business_id,
+            business_name=business_name,
+            channel=channel,
+            visitor_key=visitor_key,
+            message=message,
+            mode=mode,
+            caller=caller,
+            run_id=run_id,
+            conv=conv,
+            provider_model=provider.model,
+        )
     started = time.monotonic()
     status, error_text, tool_trace = "success", "", []
     try:
@@ -234,3 +253,217 @@ def _needs_escalation(reply: str, tool_trace: list) -> bool:
     if any(h in lowered for h in _ESCALATION_HINTS):
         return True
     return any(t.get("status") == "blocked" for t in tool_trace)
+
+
+_DEMO_PREFIX = "(Demo assistant — AI provider not configured. )"
+
+_HUMAN_HINTS = (
+    "talk to someone",
+    "connect me to staff",
+    "need a human",
+    "speak to",
+    "talk to staff",
+    "human",
+    "manager",
+    "owner",
+    "call me",
+    "staff",
+)
+
+
+def _noop_demo_turn(
+    db,
+    *,
+    business_id,
+    business_name: str,
+    channel: str,
+    visitor_key: str,
+    message: str,
+    mode: str,
+    caller: str,
+    run_id: str,
+    conv,
+    provider_model: str,
+) -> dict:
+    """Deterministic demo assistant turn (noop provider).
+
+    Uses ONLY allowlisted business-scoped tools; never invents business
+    facts. Keeps the honest demo label so tests and the UI can distinguish
+    MOCK from live Gemini replies.
+    """
+    import time as _time
+
+    started = _time.monotonic()
+    lowered = (message or "").strip().lower()
+    tool_trace: list[dict] = []
+
+    def _tool(name: str, args: dict | None = None) -> dict:
+        try:
+            result = ai_tools.execute_tool(
+                db, business_id=business_id, tool_name=name,
+                args=dict(args or {}), caller="public",
+            )
+            tool_trace.append({"tool": name, "status": "success"})
+            return result if isinstance(result, dict) else {}
+        except Exception:  # noqa: BLE001 - one bad tool must not kill demo
+            tool_trace.append({"tool": name, "status": "error"})
+            return {}
+
+    def _persist(reply_text: str, *, is_escalated: bool) -> dict:
+        repo.add_ai_message(
+            db, business_id=business_id, conversation_id=conv.id,
+            role="assistant", content=_redact(reply_text, 4000),
+            model=provider_model, tool_calls=tool_trace,
+        )
+        db.flush()
+        try:
+            runs_repo.create_run(
+                db, business_id=business_id, provider="noop",
+                model=provider_model, capability=f"chat:{mode}:{channel}",
+                status="success",
+                latency_ms=int((_time.monotonic() - started) * 1000),
+                input_chars=len(message), output_chars=len(reply_text),
+                request_id=run_id[:64], error="",
+            )
+            db.flush()
+        except Exception:  # noqa: BLE001 - audit never breaks reply
+            pass
+        if is_escalated and conv is not None:
+            conv.escalated = True
+            conv.status = "escalated"
+            db.flush()
+        return {
+            "reply": reply_text, "conversation_id": str(conv.id),
+            "tool_calls": tool_trace, "escalated": is_escalated,
+            "run_id": run_id,
+        }
+
+    name = (business_name or "this business").strip() or "this business"
+
+    # Human handoff: create staff task, pause autonomous AI.
+    if any(h in lowered for h in _HUMAN_HINTS):
+        try:
+            from app.services import growth_engine as _growth
+
+            _growth.create_handoff(
+                db, business_id=business_id, customer_name="",
+                customer_phone=visitor_key if channel == "whatsapp" else "",
+                reason=f"Visitor asked for human help: {message[:200]}",
+            )
+            db.flush()
+        except Exception:  # noqa: BLE001 - handoff task best-effort
+            pass
+        tool_trace.append({"tool": "create_staff_followup", "status": "success"})
+        return _persist(
+            _DEMO_PREFIX
+            + f"Of course — I've asked our {name} team to contact you personally. "
+            "Someone will reach out shortly. Is there anything else I can help with meanwhile?",
+            is_escalated=True,
+        )
+
+    # Member-specific state: never expose another customer's data; ask to verify.
+    if any(k in lowered for k in (
+        "expire", "expiry", "renew", "my membership", "my payment",
+        "payment go through", "last attend", "my attendance", "is my membership",
+    )):
+        return _persist(
+            _DEMO_PREFIX
+            + "I can check that for you. Could you please confirm the phone number "
+            f"linked to your {name} membership? Our team can then pull up your "
+            "exact expiry / renewal / payment status — or I can connect you to staff.",
+            is_escalated=False,
+        )
+
+    # Location.
+    if any(k in lowered for k in (
+        "where", "located", "location", "address", "reach", "map", "directions",
+    )):
+        loc = _tool("get_business_location")
+        addr = str(loc.get("address", "") or "").strip()
+        map_url = str(loc.get("map_url", "") or "").strip()
+        if not addr or addr.lower() == "address not configured":
+            return _persist(
+                _DEMO_PREFIX
+                + f"I don't have the {name} address configured yet — "
+                "our team can share it right away. Want me to connect you to staff?",
+                is_escalated=False,
+            )
+        suffix = f" Map: {map_url}" if map_url else ""
+        return _persist(
+            _DEMO_PREFIX + f"📍 {name} is at {addr}.{suffix} Want directions or trial details?",
+            is_escalated=False,
+        )
+
+    # Plans / pricing (real catalogue only).
+    if any(k in lowered for k in (
+        "plan", "price", "pricing", "cost", "much", "monthly", "annual",
+        "quarterly", "fees", "charges", "₹", "rs",
+    )):
+        plans = _tool("get_membership_plans").get("plans") or []
+        if not plans:
+            return _persist(
+                _DEMO_PREFIX
+                + f"I don't have the current {name} plans in the system — "
+                "our team can share them right away. Want me to connect you to staff?",
+                is_escalated=False,
+            )
+        lines = [f"• {p.get('name')}: ₹{p.get('price')}" for p in plans[:6]]
+        return _persist(
+            _DEMO_PREFIX + f"Here are the current {name} plans:\n"
+            + "\n".join(lines)
+            + "\nWould you like help choosing a plan or booking a trial?",
+            is_escalated=False,
+        )
+
+    # Hours.
+    if any(k in lowered for k in ("timing", "timings", "hours", "open", "close")):
+        hours = _tool("get_business_hours").get("hours") or {}
+        weekly = hours.get("weekly") or {} if isinstance(hours, dict) else {}
+        if weekly:
+            parts = []
+            for day in ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"):
+                cfg = weekly.get(day) or {}
+                if cfg.get("closed") is True:
+                    parts.append(f"{day[:3].title()}: closed")
+                elif cfg.get("open"):
+                    parts.append(f"{day[:3].title()}: {cfg.get('open')}-{cfg.get('close', '')}")
+            detail = "; ".join(parts) if parts else "Please contact the team for hours."
+            return _persist(
+                _DEMO_PREFIX + f"🕒 {name} hours — {detail}. Want to book a visit?",
+                is_escalated=False,
+            )
+        return _persist(
+            _DEMO_PREFIX
+            + f"I don't have the {name} hours configured yet — "
+            "our team can confirm them. Want me to connect you to staff?",
+            is_escalated=False,
+        )
+
+    # Trial / booking intent.
+    if any(k in lowered for k in (
+        "trial", "visit", "book", "join", "come tomorrow", "free trial", "demo",
+    )):
+        return _persist(
+            _DEMO_PREFIX
+            + f"Great — I can help you book a trial at {name}! "
+            "Just share your name and preferred day/time (e.g. 'Ravi, tomorrow 7 AM'), "
+            "and our team will confirm your slot. Which day works best for you?",
+            is_escalated=False,
+        )
+
+    # Default: Prime/business intro from configured data.
+    profile = _tool("get_business_profile")
+    loc = _tool("get_business_location")
+    display = str(profile.get("name", "") or name)
+    addr = str(loc.get("address", "") or "").strip()
+    hours = _tool("get_business_hours").get("hours") or {}
+    loc_line = f"\n📍 {addr}" if addr and addr.lower() != "address not configured" else ""
+    return _persist(
+        _DEMO_PREFIX + f"Hi 👋 Welcome to {display}!\nI can help you with:"
+        "\n• Membership plans\n• Free trial / trial booking\n• Gym timings"
+        "\n• Facilities and services\n• Location and contact details"
+        "\n• Membership renewal\n• Booking assistance"
+        f"{loc_line}"
+        "\nWould you like to know about our membership plans or book a trial?",
+        is_escalated=False,
+    )
