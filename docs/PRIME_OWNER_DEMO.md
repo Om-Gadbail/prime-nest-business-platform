@@ -1,5 +1,57 @@
 # Prime Gym — Final Owner Demo (Golden Path)
 
+## 0. Closure status — 2026-09-30 (owner-demo freeze)
+
+**Overall: PASS WITH ONE EXTERNAL LIMITATION (Meta test-token expiry).**
+Local application, deterministic AI demo, automation shape, owner dashboard
+and all five frontend surfaces are verified. Real Meta outbound/inbound is
+BLOCKED only by an expired Meta test token (see below) — no code changes
+needed once a fresh token is pasted into the local `.env`.
+
+### Meta WhatsApp (diagnosed 2026-09-30 ~13:45 UTC, credential-safe)
+- Prime `PRIME_WHATSAPP_*` loaded, provider binds Prime-only creds (LIVE mode).
+- Meta Graph `v21.0` calls fail `HTTP 401 OAuthException code=190 subcode=463`:
+  "Session has expired on Wednesday, 30-Sep-26 06:00:00 PDT".
+- Phone ID `1434101746444466` / WABA `1109202048284928` / endpoint / header /
+  API version are all correct — the ONLY fault is the expired token.
+- **User action:** Meta App Dashboard → WhatsApp → API Setup → generate a new
+  temporary test token (or a longer-lived System-User token with
+  `whatsapp_business_messaging`), set `PRIME_WHATSAPP_ACCESS_TOKEN` in local
+  `.env`, `docker compose restart backend worker scheduler`, re-run the
+  `META_CLOUD` send to `+91 8010436158`. Do NOT commit the token.
+- Until then: NO outbound claim is live; MOCK/`log` provider verified
+  end-to-end (auth → provider → persisted `simulated` row).
+
+### Verified today (local, real backend + Postgres + Redis)
+- Owner login, overview/combined/automation-health/brief/leads (all 200).
+- Website trial intake `POST /api/v1/public/prime/leads` → 201 → visible in
+  Prime CRM → owner leads (rehearsal row removed afterwards).
+- Deterministic demo assistant: Prime intro, REAL plans (Monthly ₹1500 /
+  Quarterly ₹4000 / Half Yearly ₹7500 / Annual ₹12000), Koramangala address,
+  hours Mon–Fri 05:30–22:00, handoff escalation + staff task.
+- Gemini gateway: configured LIVE but free-tier `429` rate-limited at test
+  time → honest fallback, never invents facts. Retry later for a live turn.
+- Webhook: verify-token accept/reject, pinned per-business verify,
+  cross-business 403, HMAC good/bad/empty all correct, stale-entry ack,
+  wamid idempotency (covered by suite).
+- Five surfaces HTTP 200 with viewport meta: 5173 Prime site, 5174 Nest site,
+  5175 Prime staff, 5176 Nest staff, 5177 Owner.
+- Security: `.env` untracked, no secrets in git or frontend `VITE_*`, no
+  Meta IDs in tracked code. Note: backend request logs echo webhook
+  `hub.verify_token` query params — rotate the Prime verify token after the
+  demo if logs are shared.
+- Tests: full backend suite re-run in progress; affected-file reruns green
+  after hermetic test-env isolation (`backend/tests/conftest.py` now pins
+  demo-safe AI/WhatsApp defaults so a live demo `.env` cannot break tests).
+
+### Production TODO (unchanged)
+Production Meta number + credentials + webhook, Razorpay/Stripe, VPS,
+domain, HTTPS, production DB separation, backups, observability, production
+secrets, Cloudflare tunnel at demo time (`winget install
+--id Cloudflare.cloudflared`), Meta webhook callback to tunnel URL.
+
+---
+
 Flagship demo business: **Prime Fitness** (`prime`, `prime-fitness-001`).
 Nest Library (`nest`) stays fully supported and isolated; no separate Meta
 WhatsApp demo is needed for Nest before the owner demo.

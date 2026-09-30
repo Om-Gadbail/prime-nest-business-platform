@@ -29,6 +29,20 @@ def _isolated_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("BACKEND_CORS_ORIGINS", "http://localhost:3000")
     monkeypatch.setenv("SECRET_KEY", "test-secret")
 
+    # Hermetic provider defaults: a developer/demo `.env` may carry LIVE
+    # Meta WhatsApp test credentials (PRIME_WHATSAPP_*) and a Gemini key.
+    # Process env wins over the `.env` file in pydantic-settings, so pin
+    # the demo-safe defaults here; tests that need a credential set their
+    # own monkeypatched values explicitly.
+    monkeypatch.setenv("AI_ENABLED", "false")
+    monkeypatch.setenv("AI_PROVIDER", "noop")
+    monkeypatch.setenv("GEMINI_API_KEY", "")
+    for prefix in ("WHATSAPP", "PRIME_WHATSAPP", "NEST_WHATSAPP"):
+        monkeypatch.setenv(f"{prefix}_ENABLED", "false")
+        for field in ("ACCESS_TOKEN", "PHONE_NUMBER_ID", "BUSINESS_ACCOUNT_ID",
+                      "VERIFY_TOKEN", "APP_SECRET"):
+            monkeypatch.setenv(f"{prefix}_{field}", "")
+
     # Drop cached singletons so the new env takes effect per test.
     from app.core import database
     from app.core.config import get_settings
