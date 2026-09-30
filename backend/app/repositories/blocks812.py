@@ -241,6 +241,34 @@ def get_message_by_provider(
     return db.execute(stmt).scalars().first()
 
 
+def get_message_by_idempotency(
+    db: Session, *, business_id: uuid.UUID, idempotency_key: str
+):
+    """Find an outbound message by caller-supplied idempotency key.
+
+    The key is stored in ``messages.meta.idempotency_key`` (no schema
+    change). Portable across SQLite/Postgres: scans the business's recent
+    messages in Python (bounded) instead of dialect-specific JSON queries.
+    """
+    key = (idempotency_key or "").strip()
+    if not key:
+        return None
+    stmt = apply_business_scope(select(Message), Message, business_id)
+    stmt = stmt.order_by(Message.created_at.desc()).limit(200)
+    try:
+        for row in db.execute(stmt).scalars().all():
+            try:
+                if isinstance(getattr(row, "meta", None), dict) and str(
+                    row.meta.get("idempotency_key", "")
+                ) == key:
+                    return row
+            except Exception:  # noqa: BLE001 - one bad row never blocks
+                continue
+    except Exception:  # noqa: BLE001 - lookup failure -> no match (safe)
+        return None
+    return None
+
+
 def get_message_by_automation(
     db: Session, *, business_id: uuid.UUID, automation_id: object | None
 ):

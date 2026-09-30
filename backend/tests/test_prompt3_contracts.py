@@ -261,8 +261,12 @@ class TestOpenAPIContract:
         # Prompt 8: +2 paths/+2 ops — automation/executions/dead-letter,
         # automation/executions/{execution_id}/retry (dead-letter
         # visibility + controlled manual retry; see production-reliability.md).
-        assert len(paths) == 141, len(paths)
-        assert operations == 173, operations
+        # WhatsApp production hardening: +1 path/+1 op —
+        # communications/ai-resume (explicit staff resume of autonomous
+        # WhatsApp AI after a human handoff; additive, no existing
+        # contract changed).
+        assert len(paths) == 142, len(paths)
+        assert operations == 174, operations
         # Anchors every frontend needs.
         for anchor in ("/api/v1/auth/login", "/api/v1/auth/switch-business",
                        "/api/v1/auth/businesses", "/api/v1/owner/combined",

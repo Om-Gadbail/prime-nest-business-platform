@@ -31,6 +31,14 @@ def list_conversations(
                 "external_id": c.external_id,
                 "status": c.status,
                 "subject_name": c.subject_name,
+                "subject_phone": c.subject_phone,
+                "lead_id": c.lead_id,
+                "contact_id": c.contact_id,
+                "customer_id": c.customer_id,
+                "business_id": c.business_id,
+                "last_message_at": c.last_message_at.isoformat()
+                if c.last_message_at
+                else None,
             }
             for c in items
         ],
@@ -74,7 +82,11 @@ def list_messages(
                 "provider_message_id": m.provider_message_id,
                 "template_code": m.template_code,
                 "recipient": m.recipient,
+                "sender": m.sender,
+                "business_id": m.business_id,
                 "automation_id": m.automation_id,
+                "ai_run_id": m.ai_run_id,
+                "created_at": m.created_at.isoformat() if m.created_at else None,
                 "provider_mode": ("LIVE" if m.provider == "whatsapp" else "MOCK"),
             }
             for m in items
@@ -105,11 +117,24 @@ def send_message(
             template_code=payload.template_code,
             conversation_id=payload.conversation_id,
             sender=f"staff:{ctx.user.id}",
+            provider_name=payload.provider or "",
+            idempotency_key=payload.idempotency_key or "",
         )
         db.commit()
         db.refresh(msg)
     except Exception as exc:
-        db.rollback()
+        # Provider failures already persisted an honest FAILED row: commit
+        # it so the failure stays auditable instead of rolling it away.
+        if exc.__class__.__name__ == "MessagingError":
+            try:
+                db.commit()
+            except Exception:  # noqa: BLE001 - commit best-effort
+                try:
+                    db.rollback()
+                except Exception:  # noqa: BLE001
+                    pass
+        else:
+            db.rollback()
         raise map_service_error(exc) from exc
     return {
         "id": msg.id,
@@ -117,6 +142,74 @@ def send_message(
         "provider": msg.provider,
         "provider_message_id": msg.provider_message_id,
     }
+
+
+@router.post(
+    "/ai-resume", status_code=200, summary="Resume autonomous AI after handoff"
+)
+def resume_ai(
+    payload: dict,
+    request: Request,
+    db: Session = Depends(deps.get_db),
+    ctx: AuthenticatedContext = Depends(
+        deps.require_permission("communications.manage")
+    ),
+):
+    """Explicitly resume autonomous AI messaging after a human handoff.
+
+    The WhatsApp AI stays paused after any handoff/escalation until staff
+    call this endpoint with the visitor ``phone``. Clears the escalated
+    flag on the shared-runtime AI conversation (business-scoped; a forged
+    phone from another business matches nothing). Audited.
+    """
+    assert ctx.business is not None
+    phone = str((payload or {}).get("phone", "") or "").strip()
+    if not phone:
+        from app.api.v1.endpoints._helpers import map_service_error as _map
+
+        raise _map(ValueError("phone is required."))
+    try:
+        from sqlalchemy import select as _select
+
+        from app.models.ai_business import AIConversation
+
+        row = (
+            db.execute(
+                _select(AIConversation)
+                .where(
+                    AIConversation.business_id == ctx.business.id,
+                    AIConversation.channel == "whatsapp",
+                    AIConversation.visitor_key == phone,
+                )
+                .order_by(AIConversation.created_at.desc())
+                .limit(1)
+            )
+            .scalars()
+            .first()
+        )
+        resumed = False
+        if row is not None and (
+            bool(getattr(row, "escalated", False))
+            or str(getattr(row, "status", "")) in ("escalated", "closed")
+        ):
+            row.escalated = False
+            row.status = "active"
+            resumed = True
+        record_audit(
+            db,
+            business_id=ctx.business.id,
+            action="whatsapp.ai_resumed",
+            actor_user_id=ctx.user.id,
+            entity_type="ai_conversation",
+            entity_id=getattr(row, "id", None),
+            request_id=request_id(request),
+            meta={"phone": phone[:16], "resumed": resumed},
+        )
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        raise map_service_error(exc) from exc
+    return {"resumed": resumed, "phone": phone}
 
 
 @router.get("/templates", summary="List message templates")

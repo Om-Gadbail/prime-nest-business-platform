@@ -1305,6 +1305,10 @@ def create_handoff(
     The summary contains ONLY caller-verified information (passed in, never
     model-generated secrets). Internal credentials are never included —
     summary points are truncated plain text.
+
+    Human-handoff contract: autonomous WhatsApp AI is PAUSED for the handed
+    visitor (shared-runtime AI conversation marked escalated) and stays
+    paused until staff explicitly resume via POST /communications/ai-resume.
     """
     from app.services import tasks as tasks_service
 
@@ -1340,6 +1344,54 @@ def create_handoff(
             )
         except Exception:  # noqa: BLE001 - handoff note is nice-to-have
             pass
+    # Pause autonomous AI for this visitor (all whatsapp + web AI
+    # conversations keyed by the customer phone, plus the comms conversation
+    # when supplied). Best-effort: handoff creation never fails on this.
+    try:
+        from sqlalchemy import select as _select
+
+        from app.models.ai_business import AIConversation
+        from app.models.communication import Conversation as _Conv
+
+        keys = [str(customer_phone or "").strip()] if str(customer_phone or "").strip() else []
+        if conversation_id is not None:
+            try:
+                conv_row = db.get(_Conv, conversation_id)
+                if conv_row is not None and str(getattr(conv_row, "business_id", "") or "") == str(
+                    business_id
+                ):
+                    subj = str(getattr(conv_row, "subject_phone", "") or "").strip() or str(
+                        getattr(conv_row, "external_id", "") or ""
+                    ).strip()
+                    if subj and subj not in keys:
+                        keys.append(subj)
+                    try:
+                        conv_row.status = "escalated"
+                    except Exception:  # noqa: BLE001 - status update best-effort
+                        pass
+            except Exception:  # noqa: BLE001 - conversation lookup best-effort
+                pass
+        for key in keys:
+            for channel in ("whatsapp", "web"):
+                try:
+                    ai_rows = list(
+                        db.execute(
+                            _select(AIConversation).where(
+                                AIConversation.business_id == business_id,
+                                AIConversation.channel == channel,
+                                AIConversation.visitor_key == key,
+                            )
+                        )
+                        .scalars()
+                        .all()
+                    )
+                    for ai_row in ai_rows:
+                        ai_row.escalated = True
+                        ai_row.status = "escalated"
+                except Exception:  # noqa: BLE001 - per-channel pause best-effort
+                    continue
+    except Exception:  # noqa: BLE001 - AI pause never breaks handoff creation
+        pass
     db.flush()
     _audit(
         db,

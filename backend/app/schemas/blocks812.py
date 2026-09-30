@@ -86,6 +86,12 @@ class SendMessageIn(BaseModel):
     body: str = Field(default="", max_length=4000)
     template_code: str = Field(default="", max_length=128)
     conversation_id: UUID | None = None
+    # Safe request-level idempotency: retries with the same key return the
+    # existing message without re-sending (see communications.send_message).
+    idempotency_key: str = Field(default="", max_length=128)
+    # Provider hint: "" (auto) | "mock"/"log" (demo-safe) |
+    # "meta_cloud"/"whatsapp" (live Meta Cloud API via own business creds).
+    provider: str = Field(default="", max_length=32)
 
 
 class TemplateIn(BaseModel):

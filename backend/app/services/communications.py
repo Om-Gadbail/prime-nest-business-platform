@@ -59,6 +59,7 @@ def send_message(
     automation_id=None,
     ai_run_id=None,
     provider_name: str = "",
+    idempotency_key: str = "",
 ) -> object:
     channel = (channel or "whatsapp").strip().lower()
     to_clean = (to or "").strip()
@@ -69,6 +70,17 @@ def send_message(
     body = (body or "")[:MAX_BODY]
     if not body and not template_code:
         raise ValueError("Message body or template_code is required.")
+    # Safe request-level idempotency: a caller-supplied key (e.g. automation
+    # execution id, webhook wamid, or client token) returns the existing row
+    # WITHOUT re-sending when the same logical message is retried. Stored in
+    # ``meta.idempotency_key`` (no schema change; portable across SQLite/PG).
+    idem = (idempotency_key or "").strip()[:128]
+    if idem:
+        existing_idem = repo.get_message_by_idempotency(
+            db, business_id=business_id, idempotency_key=idem
+        )
+        if existing_idem is not None:
+            return existing_idem
     # Business-scoped provider resolution (Pre-Prompt-7): the sending
     # business's OWN WhatsApp credentials win; without a live business
     # config the demo-safe log provider records the message (auditable)
@@ -99,7 +111,11 @@ def send_message(
         result = provider.send(
             to=to_clean, body=body, template_code=template_code, variables=variables
         )
-    except MessagingError:
+    except MessagingError as exc:
+        # Never falsely report delivered: persist an honest FAILED row (no
+        # provider_message_id — Meta never accepted it, so there is none)
+        # with a credential-free failure reason, then re-raise.
+        safe_reason = str(exc)[:300] if str(exc) else "provider_failed"
         msg = repo.create_message(
             db,
             business_id=business_id,
@@ -113,20 +129,28 @@ def send_message(
                 "template_code": template_code,
                 "status": "failed",
                 "provider": provider.name,
-                "provider_message_id": f"failed-{uuid.uuid4().hex[:12]}",
+                "provider_message_id": None,
                 "automation_id": automation_id,
                 "ai_run_id": ai_run_id,
-                "meta": {"error": "provider_failed"},
+                "meta": {
+                    "error": safe_reason,
+                    **({"idempotency_key": idem} if idem else {}),
+                },
             },
         )
         db.flush()
         raise
-    # Idempotency: duplicate provider id -> return existing row.
+    # Idempotency: duplicate provider id -> return existing row (Meta
+    # redelivery or transport retry that actually sent twice must not
+    # create two logical messages).
     existing = repo.get_message_by_provider(
         db, business_id=business_id, provider_message_id=result.provider_message_id
     )
     if existing is not None:
         return existing
+    raw = dict(result.raw or {})
+    if idem:
+        raw["idempotency_key"] = idem
     msg = repo.create_message(
         db,
         business_id=business_id,
@@ -143,7 +167,7 @@ def send_message(
             "provider_message_id": result.provider_message_id,
             "automation_id": automation_id,
             "ai_run_id": ai_run_id,
-            "meta": result.raw,
+            "meta": raw,
         },
     )
     repo.record_delivery(
@@ -160,6 +184,102 @@ def send_message(
     return msg
 
 
+def _link_conversation_subject(
+    db: Session, *, business_id, conv, phone: str
+) -> None:
+    """Best-effort lead/contact/customer association for a conversation.
+
+    Matches the sender phone against business-scoped leads/contacts/
+    customers (exact phone match) and fills empty FK slots. Never raises;
+    never overwrites an existing link (first link wins, staff can correct).
+    """
+    phone_clean = (phone or "").strip()
+    if not phone_clean:
+        return
+    try:
+        if getattr(conv, "lead_id", None) is None:
+            from sqlalchemy import select as _select
+
+            from app.models.lead import Lead
+
+            lead = (
+                db.execute(
+                    _select(Lead)
+                    .where(
+                        Lead.business_id == business_id,
+                        Lead.phone == phone_clean,
+                    )
+                    .limit(1)
+                )
+                .scalars()
+                .first()
+            )
+            if lead is not None:
+                conv.lead_id = lead.id
+    except Exception:  # noqa: BLE001 - linking never breaks inbound
+        pass
+    try:
+        if getattr(conv, "contact_id", None) is None:
+            from sqlalchemy import select as _select2
+
+            from app.models.contact import Contact
+
+            contact = (
+                db.execute(
+                    _select2(Contact)
+                    .where(
+                        Contact.business_id == business_id,
+                        Contact.phone == phone_clean,
+                    )
+                    .limit(1)
+                )
+                .scalars()
+                .first()
+            )
+            if contact is not None:
+                conv.contact_id = contact.id
+    except Exception:  # noqa: BLE001 - linking never breaks inbound
+        pass
+    try:
+        if getattr(conv, "customer_id", None) is None:
+            # Customers link via their contact (customers carry no phone
+            # column): match the contact by phone, then its customer row.
+            from sqlalchemy import select as _select3
+
+            from app.models.contact import Contact as _Contact3
+            from app.models.customer import Customer
+
+            contact_row = (
+                db.execute(
+                    _select3(_Contact3)
+                    .where(
+                        _Contact3.business_id == business_id,
+                        _Contact3.phone == phone_clean,
+                    )
+                    .limit(1)
+                )
+                .scalars()
+                .first()
+            )
+            if contact_row is not None:
+                customer = (
+                    db.execute(
+                        _select3(Customer)
+                        .where(
+                            Customer.business_id == business_id,
+                            Customer.contact_id == contact_row.id,
+                        )
+                        .limit(1)
+                    )
+                    .scalars()
+                    .first()
+                )
+                if customer is not None:
+                    conv.customer_id = customer.id
+    except Exception:  # noqa: BLE001 - linking never breaks inbound
+        pass
+
+
 def record_inbound(
     db: Session,
     *,
@@ -170,8 +290,19 @@ def record_inbound(
     body: str,
     provider_message_id: str,
     raw: dict | None = None,
-) -> object:
-    """Inbound handler: dedupes on provider id, links/creates conversation."""
+    occurred_at=None,
+) -> object | None:
+    """Inbound handler: dedupes on provider id, links/creates conversation.
+
+    Returns None when there is no usable sender identity (unknown phone):
+    the webhook acks without creating empty-identity conversations.
+    Timestamp (Meta ``timestamp``) is preserved as the message ``created_at``
+    when valid; otherwise the DB default applies. Contact/lead/customer
+    association is resolved best-effort by sender phone.
+    """
+    sender_clean = (sender or external_id or "").strip()
+    if not sender_clean:
+        return None
     if provider_message_id:
         existing = repo.get_message_by_provider(
             db, business_id=business_id, provider_message_id=provider_message_id
@@ -182,26 +313,37 @@ def record_inbound(
         db,
         business_id=business_id,
         channel=channel,
-        external_id=external_id or sender,
-        subject_name=sender,
-        subject_phone=sender,
+        external_id=(external_id or sender_clean)[:200],
+        subject_name=sender_clean[:200],
+        subject_phone=sender_clean[:32],
     )
+    _link_conversation_subject(db, business_id=business_id, conv=conv, phone=sender_clean)
     conv.last_message_at = _utcnow()
+    fields: dict = {
+        "conversation_id": conv.id,
+        "direction": "inbound",
+        "channel": channel,
+        "sender": sender_clean[:200],
+        "recipient": "business",
+        "body": (body or "")[:MAX_BODY],
+        "status": "delivered",
+        "provider": channel,
+        "provider_message_id": provider_message_id or f"in-{uuid.uuid4().hex[:12]}",
+        "meta": dict(raw or {}),
+    }
+    if occurred_at is not None:
+        try:
+            from datetime import timezone as _tz
+
+            if occurred_at.tzinfo is None:
+                occurred_at = occurred_at.replace(tzinfo=_tz.utc)
+            fields["created_at"] = occurred_at
+        except Exception:  # noqa: BLE001 - bad timestamp falls back to default
+            pass
     msg = repo.create_message(
         db,
         business_id=business_id,
-        fields={
-            "conversation_id": conv.id,
-            "direction": "inbound",
-            "channel": channel,
-            "sender": sender,
-            "recipient": "business",
-            "body": (body or "")[:MAX_BODY],
-            "status": "delivered",
-            "provider": channel,
-            "provider_message_id": provider_message_id or f"in-{uuid.uuid4().hex[:12]}",
-            "meta": dict(raw or {}),
-        },
+        fields=fields,
     )
     db.flush()
     return msg

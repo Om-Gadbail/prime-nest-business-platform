@@ -206,6 +206,14 @@ class Settings(BaseSettings):
     # Per-business operational config (business_settings.operational.whatsapp.phone_number_id)
     # wins over this map; the map wins over the single WHATSAPP_PHONE_NUMBER_ID fallback.
     whatsapp_phone_number_map: str = Field(default="", max_length=1024)
+    # Meta Graph API version for WhatsApp Cloud API (configurable, no code
+    # change needed to move to newer versions, e.g. WHATSAPP_API_VERSION=v22.0).
+    # Provider modes: MOCK ("log": demo-safe, no external send) vs META_CLOUD
+    # ("whatsapp": real Graph API credential bound). Both names are accepted
+    # as provider aliases (see app/services/messaging.py).
+    whatsapp_api_version: str = Field(default="v21.0", max_length=16)
+    whatsapp_timeout_seconds: float = Field(default=15.0, ge=1.0, le=120.0)
+    whatsapp_max_attempts: int = Field(default=3, ge=1, le=5)
 
     # --- Full-platform integration: Redis / scheduler / worker ---
     # Empty (default) = single-process safe fallback (in-memory limiter, DB polling).

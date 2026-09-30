@@ -90,13 +90,23 @@ class WhatsAppCloudProvider(MessagingProvider):
 
     Required: access token + phone-number-id. Uses template messages when
     ``template_code`` is set, else a text message. Timeouts + bounded
-    errors; never raises httpx internals. NEVER sends in tests — use
-    ``build_send_request`` for request-construction assertions.
+    retries (transport/429/5xx only, never other 4xx) + normalized errors;
+    never raises httpx internals and never leaks credentials in messages.
+    NEVER sends in tests — use ``build_send_request`` for
+    request-construction assertions.
+
+    Canonical provider names: META_CLOUD == "whatsapp" (live Graph API),
+    MOCK == "log" (demo-safe, no external send). Both aliases are accepted
+    by ``get_messaging_provider`` / ``get_messaging_provider_for_business``.
     """
 
     name = "whatsapp"
+    # Canonical aliases (task §12): MOCK stays usable for local tests.
+    CANONICAL_NAMES = frozenset({"whatsapp", "meta_cloud", "meta-cloud", "metacloud"})
+    MOCK_NAMES = frozenset({"log", "mock"})
     GRAPH_VERSION = "v21.0"
     TIMEOUT_SECONDS = 15.0
+    MAX_ATTEMPTS = 3
 
     def __init__(
         self,
@@ -145,6 +155,41 @@ class WhatsAppCloudProvider(MessagingProvider):
             business_key=config.business_key,
         )
 
+    def _api_version(self) -> str:
+        """Configurable Graph API version (WHATSAPP_API_VERSION, else default)."""
+        try:
+            configured = str(getattr(self._s, "whatsapp_api_version", "") or "").strip()
+        except Exception:  # noqa: BLE001 - settings access never breaks sends
+            configured = ""
+        version = configured or self.GRAPH_VERSION
+        if not version.startswith("v"):
+            version = f"v{version}"
+        # Allowlist shape: v<major>.<minor> (e.g. v21.0) — anything else falls
+        # back to the known-good default instead of building a bad URL.
+        import re as _re
+
+        if not _re.fullmatch(r"v\d{2,3}\.\d+", version):
+            return self.GRAPH_VERSION
+        return version
+
+    def _timeout(self) -> float:
+        try:
+            value = float(getattr(self._s, "whatsapp_timeout_seconds", 0) or 0)
+        except (TypeError, ValueError):
+            value = 0.0
+        if value < 1.0 or value > 120.0:
+            return self.TIMEOUT_SECONDS
+        return value
+
+    def _max_attempts(self) -> int:
+        try:
+            value = int(getattr(self._s, "whatsapp_max_attempts", 0) or 0)
+        except (TypeError, ValueError):
+            value = 0
+        if value < 1 or value > 5:
+            return self.MAX_ATTEMPTS
+        return value
+
     def build_send_request(
         self,
         *,
@@ -163,7 +208,7 @@ class WhatsAppCloudProvider(MessagingProvider):
                 "WhatsApp is not configured (missing token/phone-number-id)."
             )
         url = (
-            f"https://graph.facebook.com/{self.GRAPH_VERSION}/"
+            f"https://graph.facebook.com/{self._api_version()}/"
             f"{self._phone_number_id}/messages"
         )
         headers = {
@@ -194,6 +239,15 @@ class WhatsAppCloudProvider(MessagingProvider):
         template_code: str = "",
         variables: dict | None = None,
     ) -> SendResult:
+        """Send via Meta Cloud API with bounded safe retries.
+
+        Retry policy (safe subset only): transport exceptions + HTTP 429/5xx
+        are retried up to ``whatsapp_max_attempts`` with linear backoff
+        (POST has no server-side idempotency, so retries happen ONLY when
+        Meta demonstrably did not accept the message). Other 4xx fail fast
+        with a normalized error. Never reports delivered unless Meta
+        returned 2xx. Exception messages never contain credentials.
+        """
         if not self._access_token or not self._phone_number_id:
             raise MessagingError(
                 "WhatsApp is not configured (missing token/phone-number-id)."
@@ -203,36 +257,91 @@ class WhatsAppCloudProvider(MessagingProvider):
             "Authorization": f"Bearer {self._access_token}",
             "Content-Type": "application/json",
         }
-        try:
-            resp = httpx.post(
-                request["url"],
-                json=request["payload"],
-                headers=headers,
-                timeout=self.TIMEOUT_SECONDS,
+        timeout = self._timeout()
+        max_attempts = self._max_attempts()
+        last_error: Exception | None = None
+        import time as _time
+
+        for attempt in range(1, max_attempts + 1):
+            try:
+                resp = httpx.post(
+                    request["url"],
+                    json=request["payload"],
+                    headers=headers,
+                    timeout=timeout,
+                )
+            except Exception as exc:  # noqa: BLE001 - transport errors are retried by type only
+                # Transport failure (timeout/DNS/reset): Meta did not accept
+                # -> safe to retry within budget. Never echo the exception
+                # body (it may contain URL fragments); type name only.
+                last_error = exc
+                if attempt < max_attempts:
+                    _time.sleep(min(2.0, 0.25 * (2 ** (attempt - 1))))
+                    continue
+                raise MessagingError(
+                    f"WhatsApp transport failed "
+                    f"({type(exc).__name__}; attempts={attempt})."
+                ) from None
+            status_code = int(getattr(resp, "status_code", 0) or 0)
+            if status_code == 429 or status_code >= 500:
+                last_error = None
+                if attempt < max_attempts:
+                    _time.sleep(min(2.0, 0.25 * (2 ** (attempt - 1))))
+                    continue
+                raise MessagingError(
+                    f"WhatsApp temporarily unavailable (HTTP {status_code}; "
+                    f"attempts={attempt})."
+                )
+            if status_code >= 400 or status_code == 0:
+                # Non-retryable rejection (bad template/recipient/auth): fail
+                # fast with a normalized, credential-free error. Attempt to
+                # surface Meta's error code/message (safe subset) without
+                # ever including tokens or secrets.
+                detail = ""
+                try:
+                    data = resp.json() if hasattr(resp, "json") else {}
+                    err = (data.get("error") or {}) if isinstance(data, dict) else {}
+                    code = str(err.get("code", ""))[:16]
+                    message = str(err.get("message", ""))[:200]
+                    if code or message:
+                        detail = f" code={code} msg={message}".rstrip()
+                except Exception:  # noqa: BLE001 - error parsing never breaks normalization
+                    detail = ""
+                raise MessagingError(
+                    f"WhatsApp rejected the message (HTTP {status_code}).{detail}"
+                )
+            try:
+                data = resp.json()
+                messages = data.get("messages", [{}]) if isinstance(data, dict) else [{}]
+                mid = str(
+                    (messages[0] or {}).get("id", "") if messages else ""
+                ).strip()
+                if not mid:
+                    mid = f"wa-{uuid.uuid4().hex[:12]}"
+            except Exception:  # noqa: BLE001 - vendor shape drift falls back to local id
+                mid = f"wa-{uuid.uuid4().hex[:12]}"
+            return SendResult(
+                provider="whatsapp",
+                provider_message_id=mid,
+                status="sent",
+                raw={"http": status_code},
             )
-        except Exception as exc:
-            raise MessagingError(f"WhatsApp transport failed: {exc}") from exc
-        if resp.status_code >= 400:
-            raise MessagingError(
-                f"WhatsApp rejected the message (HTTP {resp.status_code})."
-            )
-        try:
-            data = resp.json()
-            mid = str(
-                data.get("messages", [{}])[0].get("id", f"wa-{uuid.uuid4().hex[:12]}")
-            )
-        except Exception:  # noqa: BLE001 - vendor shape drift falls back to local id
-            mid = f"wa-{uuid.uuid4().hex[:12]}"
-        return SendResult(
-            provider="whatsapp",
-            provider_message_id=mid,
-            status="sent",
-            raw={"http": resp.status_code},
-        )
+        assert last_error is not None  # pragma: no cover - loop always returns/raises
+        raise MessagingError("WhatsApp transport failed (unknown).") from None
+
+
+def _normalize_provider_name(name: str) -> str:
+    """Canonicalize provider aliases: MOCK->log, META_CLOUD->whatsapp."""
+    key = (name or "").strip().lower().replace("-", "_")
+    if key in WhatsAppCloudProvider.MOCK_NAMES:
+        return "log"
+    if key in WhatsAppCloudProvider.CANONICAL_NAMES:
+        return "whatsapp"
+    return key
 
 
 def get_messaging_provider(settings: Settings, name: str = "") -> MessagingProvider:
-    key = (name or "").strip().lower()
+    key = _normalize_provider_name(name)
     if not key:
         key = "whatsapp" if settings.whatsapp_enabled else "log"
     if key == "whatsapp":
@@ -247,7 +356,7 @@ def get_messaging_provider(settings: Settings, name: str = "") -> MessagingProvi
         return WhatsAppCloudProvider(settings)
     if key == "log":
         return LogProvider()
-    raise MessagingError(f"Unknown messaging provider: {name!r}.")
+    raise MessagingError("Unknown messaging provider.")
 
 
 def get_messaging_provider_for_business(
@@ -264,7 +373,7 @@ def get_messaging_provider_for_business(
     """
     from app.services import integration_configs as iconf
 
-    key = (name or "").strip().lower()
+    key = _normalize_provider_name(name)
     if key in ("", "whatsapp"):
         config = iconf.resolve_whatsapp_config(settings, business)
         if config.live:
@@ -285,7 +394,7 @@ def get_messaging_provider_for_business(
         return legacy
     if key == "log":
         return LogProvider()
-    raise MessagingError(f"Unknown messaging provider: {name!r}.")
+    raise MessagingError("Unknown messaging provider.")
 
 
 def verify_whatsapp_signature(*, app_secret: str, body: bytes, signature: str) -> bool:
