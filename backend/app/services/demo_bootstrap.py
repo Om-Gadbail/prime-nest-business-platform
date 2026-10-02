@@ -48,8 +48,9 @@ def bootstrap_demo_access(db: Session, settings) -> dict:
     owner_password = str(getattr(settings, "owner_seed_password", "") or "")
     staff_password = str(getattr(settings, "staff_seed_password", "") or "")
     if len(owner_password) < 10 or len(owner_password) > 128 or len(staff_password) < 10 or len(staff_password) > 128:
-        STATE.update({"status": "error", "reason": "bad_password_length"})
-        raise ValueError("Demo seed passwords must be 10-128 characters.")
+        # Config error (e.g. operator cleared demo passwords): fail fast, no retry.
+        STATE.update({"status": "skipped", "reason": "bad_password_config"})
+        return {"created": [], "healed": [], "skipped": True, "reason": "bad_password_config"}
 
     seed_service.seed_development(db, include_owner=False, include_staff=False)
     businesses = {b.slug: b for b in db.execute(select(Business)).scalars().all()}

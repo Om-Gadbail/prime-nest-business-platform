@@ -198,8 +198,10 @@ def create_app() -> FastAPI:
 
             st = dict(getattr(_demo_state, "STATE", {}) or {})
             flag = "enabled" if get_settings().demo_provision_enabled else "disabled"
+            # Reason is a safe token only (status/reason codes, counts) — never
+            # emails, passwords, tokens, or DSNs.
             response.headers["X-Demo-Bootstrap"] = (
-                f"{flag}/{st.get('status', 'pending')}"
+                f"{flag}/{st.get('status', 'pending')}/{st.get('reason', '-')}"
             )
         except Exception:
             pass
