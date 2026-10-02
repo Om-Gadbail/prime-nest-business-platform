@@ -101,8 +101,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                     try:
                         from app.services import demo_bootstrap as _demo_state
 
+                        # Reason carries ONLY the exception type + attribute context
+                        # (e.g. AttributeError: 'X' has no attribute 'y'). Attribute
+                        # names never contain secrets; messages are truncated.
                         _demo_state.STATE.update(
-                            {"status": "error", "reason": type(exc).__name__}
+                            {
+                                "status": "error",
+                                "reason": f"{type(exc).__name__}:{str(exc)[:100]}",
+                            }
                         )
                     except Exception:
                         pass
