@@ -65,7 +65,7 @@
   `004f96f9493f4ad0b69c6bce999c027d`, `python_workers` flags).
   **Superseded by the tiny TS forwarder** (`infra/cloudflare/worker/`).
   Do NOT deploy the old 20+ MB Python bundle again.
-- Public Pages (to re-verify before cutover):
+- Public Pages (verified HTTP 200 on 2026-10-02):
   Prime `https://prime-fitness.pages.dev`, Nest `https://nest-library.pages.dev`,
   Prime-staff `https://prime-fitness-staff.pages.dev`,
   Nest-staff `https://nest-library-staff.pages.dev`,
