@@ -4,6 +4,8 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import { z } from 'zod';
 import { getConfiguredSlug, presetForSlug } from '../../config/business';
 import { useSession } from '../../lib/auth';
+import { ApiError } from '../../lib/api';
+import { WAKING_MESSAGE, isColdStartError, waitForBackendReady } from '../../lib/readiness';
 import { Button, Card } from '../../components/ui/primitives';
 import { TextInput } from '../../components/ui/forms';
 
@@ -20,6 +22,7 @@ export function LoginPage(): JSX.Element {
   const navigate = useNavigate();
   const location = useLocation();
   const [pending, setPending] = useState(false);
+  const [waking, setWaking] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
   const activePreset = presetForSlug(getConfiguredSlug());
   const from = (location.state as { from?: string } | null)?.from ?? '/';
@@ -36,12 +39,44 @@ export function LoginPage(): JSX.Element {
 
   const onSubmit = handleSubmit(async (values) => {
     setPending(true);
+    setWaking(false);
     setFormError(null);
+    // Preserve credentials across cold-start retries: values stay in the
+    // form (no reset), so a Render free wake-up never wipes user input.
+    const attemptLogin = () => login(values.email.trim(), values.password, getConfiguredSlug());
     try {
-      await login(values.email.trim(), values.password, getConfiguredSlug());
+      await attemptLogin();
       navigate(from, { replace: true });
     } catch (err) {
-      setFormError(err instanceof Error ? err.message : 'Sign in failed.');
+      // Render free cold start: the api client already retried with
+      // backoff. If it still looks like a wake-up, probe /health once and
+      // retry the login a final time before showing a terminal error.
+      if (isColdStartError(err) || (err instanceof ApiError && (err.kind === 'unreachable' || err.kind === 'timeout'))) {
+        setWaking(true);
+        setFormError(WAKING_MESSAGE);
+        try {
+          const ready = await waitForBackendReady();
+          if (ready.ok) {
+            try {
+              await attemptLogin();
+              navigate(from, { replace: true });
+              return;
+            } catch (retryErr) {
+              setFormError(retryErr instanceof Error ? retryErr.message : 'Sign in failed.');
+            } finally {
+              setWaking(false);
+            }
+          } else {
+            setFormError(err instanceof Error ? err.message : 'Sign in failed.');
+            setWaking(false);
+          }
+        } catch {
+          setFormError(err instanceof Error ? err.message : 'Sign in failed.');
+          setWaking(false);
+        }
+      } else {
+        setFormError(err instanceof Error ? err.message : 'Sign in failed.');
+      }
     } finally {
       setPending(false);
     }
@@ -94,7 +129,7 @@ export function LoginPage(): JSX.Element {
               </p>
             ) : null}
             <Button type="submit" loading={pending} className="w-full" size="lg">
-              Sign in
+              {waking ? 'Waking backend…' : 'Sign in'}
             </Button>
           </form>
         </Card>

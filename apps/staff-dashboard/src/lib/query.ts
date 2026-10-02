@@ -17,11 +17,28 @@ export function createQueryClient(): QueryClient {
         retry: (count, err) => {
           const status = (err as { status?: number })?.status;
           if (status === 401 || status === 403 || status === 404) return false;
+          // Render free cold start (502/503/504 or network/timeout kinds):
+          // allow a few bounded retries; anything else keeps the old single retry.
+          const kind = (err as { kind?: string })?.kind;
+          if (
+            status === 502 ||
+            status === 503 ||
+            status === 504 ||
+            kind === 'unreachable' ||
+            kind === 'timeout'
+          ) {
+            return count < 3;
+          }
           return count < 1;
         },
+        // Bounded exponential backoff (no request storms on wake-up).
+        retryDelay: (attemptIndex) => Math.min(1000 * 2 ** attemptIndex, 10_000),
         refetchOnWindowFocus: false,
       },
       mutations: {
+        // Never auto-retry mutations: payments/leads/bookings/membership
+        // actions must not duplicate during a cold start. The UI surfaces
+        // a manual retry with input preserved.
         retry: false,
       },
     },

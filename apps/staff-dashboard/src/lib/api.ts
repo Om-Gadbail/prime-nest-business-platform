@@ -15,6 +15,11 @@
  */
 
 import { getApiBaseUrl } from '../config/business';
+import {
+  COLD_START_EXHAUSTED_MESSAGE,
+  coldStartDelay,
+  isColdStartStatus,
+} from './readiness';
 
 export type ApiErrorKind =
   | 'unauthorized'
@@ -42,6 +47,21 @@ export class ApiError extends Error {
 }
 
 const TIMEOUT_MS = 15000;
+
+/**
+ * Bounded cold-start retries for idempotent traffic only.
+ * GET requests plus the auth login/refresh exchange may be retried on
+ * network failure/timeout/502/503/504 (Render free wake-up). Mutating
+ * POST/PATCH/PUT/DELETE are never auto-retried (no duplicate
+ * payments/leads/bookings/memberships); they fail with a waking-aware
+ * message so the UI can offer a manual retry with input preserved.
+ */
+const COLD_START_RETRY_ATTEMPTS = 4;
+
+function isRetryableRequest(method: string, path: string): boolean {
+  if (method === 'GET') return true;
+  return path.startsWith('/api/v1/auth/login') || path.startsWith('/api/v1/auth/refresh');
+}
 
 let accessToken: string | null = null;
 let refreshToken: string | null = null;
@@ -95,6 +115,12 @@ function toApiError(status: number, body: Record<string, unknown>, requestId?: s
   if (status === 422 || status === 400) return new ApiError('validation', friendlyMessage(status, body, 'Please check the input.'), { status, requestId });
   if (status === 409) return new ApiError('conflict', friendlyMessage(status, body, 'Conflicts with existing data.'), { status, requestId });
   if (status === 429) return new ApiError('rate_limited', friendlyMessage(status, body, 'Too many requests. Try again shortly.'), { status, requestId });
+  // Render free cold start surfaces as 502/503/504: report as unreachable
+  // (waking) rather than a generic server error so the UI can show the
+  // waking-up state instead of a terminal failure.
+  if (isColdStartStatus(status)) {
+    return new ApiError('unreachable', COLD_START_EXHAUSTED_MESSAGE, { status, requestId });
+  }
   return new ApiError('server', friendlyMessage(status, body, 'Something went wrong. Try again.'), { status, requestId });
 }
 
@@ -116,17 +142,18 @@ export async function apiRequest<T>(path: string, opts: RequestOptions = {}): Pr
     }
   }
   const useAuth = opts.auth !== false;
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), opts.timeoutMs ?? TIMEOUT_MS);
+  const method = opts.method ?? 'GET';
+  const retryable = isRetryableRequest(method, path);
 
-  async function send(token: string | null): Promise<Response> {
-    const headers: Record<string, string> = { Accept: 'application/json' };
-    if (opts.body !== undefined) headers['Content-Type'] = 'application/json';
-    if (token) headers.Authorization = `Bearer ${token}`;
-    let res: Response;
+  async function sendOnce(token: string | null, timeoutMs: number): Promise<Response> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
-      res = await fetch(url.toString(), {
-        method: opts.method ?? 'GET',
+      const headers: Record<string, string> = { Accept: 'application/json' };
+      if (opts.body !== undefined) headers['Content-Type'] = 'application/json';
+      if (token) headers.Authorization = `Bearer ${token}`;
+      return await fetch(url.toString(), {
+        method,
         headers,
         credentials: 'include',
         body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
@@ -134,20 +161,49 @@ export async function apiRequest<T>(path: string, opts: RequestOptions = {}): Pr
       });
     } catch (err) {
       if (err instanceof DOMException && err.name === 'AbortError') {
-        throw new ApiError('timeout', 'The request timed out. Please try again.');
+        throw new ApiError('timeout', COLD_START_EXHAUSTED_MESSAGE);
       }
-      throw new ApiError('unreachable', 'Could not reach the server. Check your connection.');
+      throw new ApiError('unreachable', COLD_START_EXHAUSTED_MESSAGE);
+    } finally {
+      clearTimeout(timer);
     }
-    return res;
   }
 
-  try {
-    let res = await send(useAuth ? accessToken : null);
+  let lastColdStartError: ApiError | null = null;
+  const maxAttempts = retryable ? COLD_START_RETRY_ATTEMPTS : 1;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    let res: Response;
+    try {
+      res = await sendOnce(useAuth ? accessToken : null, opts.timeoutMs ?? TIMEOUT_MS);
+    } catch (err) {
+      // Network failure / timeout on a retryable request: back off and retry.
+      if (retryable && err instanceof ApiError && (err.kind === 'unreachable' || err.kind === 'timeout') && attempt < maxAttempts) {
+        lastColdStartError = err;
+        await new Promise((r) => setTimeout(r, coldStartDelay(attempt)));
+        continue;
+      }
+      throw err;
+    }
+    // Edge cold-start status on a retryable request: back off and retry.
+    if (retryable && isColdStartStatus(res.status) && attempt < maxAttempts) {
+      // Drain the body so the connection can be reused, then wait.
+      try {
+        await res.arrayBuffer();
+      } catch {
+        // ignore drain errors
+      }
+      lastColdStartError = new ApiError('unreachable', COLD_START_EXHAUSTED_MESSAGE, {
+        status: res.status,
+        requestId: res.headers.get('X-Request-ID') ?? undefined,
+      });
+      await new Promise((r) => setTimeout(r, coldStartDelay(attempt)));
+      continue;
+    }
     // One transparent refresh on 401 (auth endpoints excluded to avoid loops).
     if (res.status === 401 && useAuth && !path.startsWith('/api/v1/auth/')) {
       const refreshed = await tryRefresh();
       if (refreshed) {
-        res = await send(accessToken);
+        res = await sendOnce(accessToken, opts.timeoutMs ?? TIMEOUT_MS);
       } else {
         const body = await parseJsonSafe(res);
         onUnauthorized?.();
@@ -159,9 +215,8 @@ export async function apiRequest<T>(path: string, opts: RequestOptions = {}): Pr
     const body = await parseJsonSafe(res);
     if (res.ok) return body as T;
     throw toApiError(res.status, body, requestId);
-  } finally {
-    clearTimeout(timer);
   }
+  throw lastColdStartError ?? new ApiError('unreachable', COLD_START_EXHAUSTED_MESSAGE);
 }
 
 async function tryRefresh(): Promise<boolean> {
