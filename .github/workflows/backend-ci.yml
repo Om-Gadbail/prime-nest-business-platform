@@ -13,6 +13,9 @@ jobs:
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
       - run: pip install -r backend/requirements.txt
-      - run: python -m pytest backend/tests -q
+      # Run from backend/ where alembic.ini lives (repo-root invocation breaks
+      # the 2 TestMigration0008 path assertions; see docs/deployment/PRODUCTION_ACCEPTANCE.md).
+      - run: python -m pytest tests -q
+        working-directory: backend
       - run: python scripts/verify/forwarding_contract.py --api http://localhost:8000
         if: false # runs post-deploy against real env, not in unit CI

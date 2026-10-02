@@ -9,7 +9,7 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 
@@ -164,8 +164,17 @@ def create_app() -> FastAPI:
         tags=["operations"],
         summary="Liveness",
     )
-    def health() -> dict:
+    def health(response: Response) -> dict:
         # Liveness: no DB touch, so orchestrators can restart safely.
+        # Observable deploy marker (no secrets): shows whether first-boot demo
+        # provisioning is enabled in this build's config. Proves the bootstrap
+        # code is live without leaking users or passwords.
+        try:
+            response.headers["X-Demo-Bootstrap"] = (
+                "enabled" if get_settings().demo_provision_enabled else "disabled"
+            )
+        except Exception:
+            pass
         return health_service.get_health()
 
     @app.get(
