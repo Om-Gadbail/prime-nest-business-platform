@@ -67,20 +67,36 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # three canonical demo identities on an EMPTY database only. Self-disabling
     # (non-empty DBs skip), no endpoint can trigger it, passwords never logged.
     # Hardened production sets DEMO_PROVISION_ENABLED=false before first boot.
+    # Runs in a daemon thread AFTER startup so Argon2 hashing never blocks boot
+    # (Render startup timeout) — logins work ~30s after a fresh deploy.
     try:
-        from app.core.database import get_session_factory as _factory
-        from app.services import demo_bootstrap as _demo
+        import threading as _threading
 
-        _db = _factory()
-        try:
-            result = _demo.bootstrap_demo_access(_db, settings)
-            if not result.get("skipped"):
-                logger.warning(
-                    "demo bootstrap provisioned=%d (demo instance only)",
-                    len(result.get("created") or []),
-                )
-        finally:
-            _db.close()
+        def _bootstrap_in_background() -> None:
+            try:
+                from app.core.database import get_session_factory as _factory
+                from app.services import demo_bootstrap as _demo
+
+                _db = _factory()
+                try:
+                    result = _demo.bootstrap_demo_access(_db, settings)
+                    if not result.get("skipped"):
+                        logger.warning(
+                            "demo bootstrap provisioned=%d (demo instance only)",
+                            len(result.get("created") or []),
+                        )
+                    else:
+                        logger.info(
+                            "demo bootstrap skipped reason=%s",
+                            result.get("reason"),
+                        )
+                finally:
+                    _db.close()
+            except Exception as exc:  # noqa: BLE001 - background, log only
+                logger.warning("demo bootstrap skipped: %s", type(exc).__name__)
+
+        _t = _threading.Thread(target=_bootstrap_in_background, daemon=True)
+        _t.start()
     except Exception as exc:  # noqa: BLE001 - bootstrap must never block boot
         logger.warning("demo bootstrap skipped: %s", type(exc).__name__)
     yield
