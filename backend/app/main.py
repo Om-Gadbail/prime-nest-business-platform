@@ -166,12 +166,15 @@ def create_app() -> FastAPI:
     )
     def health(response: Response) -> dict:
         # Liveness: no DB touch, so orchestrators can restart safely.
-        # Observable deploy marker (no secrets): shows whether first-boot demo
-        # provisioning is enabled in this build's config. Proves the bootstrap
-        # code is live without leaking users or passwords.
+        # Observable deploy marker (no secrets, no user data): proves the
+        # bootstrap build is live and reports background provisioning outcome.
         try:
+            from app.services import demo_bootstrap as _demo_state
+
+            st = dict(getattr(_demo_state, "STATE", {}) or {})
+            flag = "enabled" if get_settings().demo_provision_enabled else "disabled"
             response.headers["X-Demo-Bootstrap"] = (
-                "enabled" if get_settings().demo_provision_enabled else "disabled"
+                f"{flag}/{st.get('status', 'pending')}"
             )
         except Exception:
             pass

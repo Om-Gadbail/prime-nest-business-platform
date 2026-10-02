@@ -1,145 +1,122 @@
-"""First-boot demo bootstrap (Render free-tier, no Shell).
+"""Demo bootstrap (Render free-tier, no Shell).
 
-Provisions the three canonical demo identities on an EMPTY database only:
+Ensures the three canonical demo identities whenever DEMO_PROVISION_ENABLED=true:
   owner@prime-nest-dashboard.com (OWNER, prime + nest)
   staff@primefitness.in          (STAFF, prime only)
   staff@nestlibrary.in           (STAFF, nest only)
 
-Safety (all enforced, all tested):
-- Runs only when DEMO_PROVISION_ENABLED=true (explicit kill-switch; hardened
-  production sets false) AND the users table is empty (zero rows).
-- Non-empty databases are never touched (self-disabling after first success;
-  later restarts skip; no public endpoint can trigger this).
-- Existing users are never password-reset (passwords set only on creation).
-- Only the three canonical emails are ever created; arbitrary users untouched.
-- Passwords come from settings (OWNER_SEED_PASSWORD / STAFF_SEED_PASSWORD
-  env when set, else documented demo defaults); plaintext never logged.
-- RBAC + businesses are ensured first via the safe base seed (no users).
-- Tenant isolation preserved: staff get exactly one membership each; owner
-  gets both; roles are STAFF (staff) / OWNER (owner) on creation.
+Safety:
+- Flag-gated (hardened production sets DEMO_PROVISION_ENABLED=false).
+- Startup-only; no public endpoint can trigger it.
+- Only the three canonical emails are ever created/updated; all other users untouched.
+- Idempotent (get_by_email checks; re-runs heal to same state, never duplicate).
+- Passwords come from settings (OWNER_SEED_PASSWORD / STAFF_SEED_PASSWORD env
+  when set, else documented demo defaults); plaintext never logged.
+- RBAC + businesses ensured first via safe base seed. Tenant isolation preserved.
 """
 
 from __future__ import annotations
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.business import Business
-from app.models.user import User
 
 OWNER_EMAIL = "owner@prime-nest-dashboard.com"
 PRIME_STAFF_EMAIL = "staff@primefitness.in"
 NEST_STAFF_EMAIL = "staff@nestlibrary.in"
 
+STATE: dict = {"status": "pending", "created": 0, "healed": 0, "reason": "pending"}
+
 
 def is_bootstrap_needed(db: Session, *, enabled: bool) -> bool:
-    """True only when bootstrap is allowed AND the database has zero users."""
-    if not enabled:
-        return False
-    try:
-        total = db.execute(select(func.count(User.id))).scalar_one()
-    except Exception:
-        return False
-    return int(total or 0) == 0
+    """Legacy helper: True when enabled (kept for tests/back-compat)."""
+    return bool(enabled)
 
 
 def bootstrap_demo_access(db: Session, settings) -> dict:
-    """Create the three canonical demo users on an empty DB (idempotent).
-
-    Returns {"created": [...], "skipped": bool, "reason": str}.
-    Never raises for expected skip conditions; raises only on DB errors
-    (caller decides to log + continue boot).
-    """
+    """Ensure canonical demo users exist with settings passwords (idempotent)."""
     from app.core import security
     from app.repositories import memberships as mr
     from app.repositories import users as ur
     from app.services import seed as seed_service
 
     if not bool(getattr(settings, "demo_provision_enabled", False)):
-        return {"created": [], "skipped": True, "reason": "disabled"}
-    try:
-        total = db.execute(select(func.count(User.id))).scalar_one()
-    except Exception as exc:
-        raise exc
-    if int(total or 0) != 0:
-        return {"created": [], "skipped": True, "reason": "non_empty"}
+        STATE.update({"status": "skipped", "reason": "disabled"})
+        return {"created": [], "healed": [], "skipped": True, "reason": "disabled"}
 
-    owner_password = str(
-        getattr(settings, "owner_seed_password", "") or ""
-    )
-    staff_password = str(
-        getattr(settings, "staff_seed_password", "") or ""
-    )
-    if len(owner_password) < 10 or len(staff_password) > 128 or len(staff_password) < 10 or len(owner_password) > 128:
+    owner_password = str(getattr(settings, "owner_seed_password", "") or "")
+    staff_password = str(getattr(settings, "staff_seed_password", "") or "")
+    if len(owner_password) < 10 or len(owner_password) > 128 or len(staff_password) < 10 or len(staff_password) > 128:
+        STATE.update({"status": "error", "reason": "bad_password_length"})
         raise ValueError("Demo seed passwords must be 10-128 characters.")
 
-    # Base platform first (RBAC + businesses + templates, no users).
-    seed_service.seed_development(
-        db, include_owner=False, include_staff=False
-    )
+    seed_service.seed_development(db, include_owner=False, include_staff=False)
     businesses = {b.slug: b for b in db.execute(select(Business)).scalars().all()}
     if "prime" not in businesses or "nest" not in businesses:
+        STATE.update({"status": "error", "reason": "no_businesses"})
         raise RuntimeError("prime/nest businesses missing after base seed")
     owner_role = mr.get_role_by_name(db, name="OWNER")
     staff_role = mr.get_role_by_name(db, name="STAFF")
     if owner_role is None or staff_role is None:
+        STATE.update({"status": "error", "reason": "no_roles"})
         raise RuntimeError("RBAC roles missing after base seed")
 
     created: list[str] = []
-    # Owner (both businesses). Users table was empty, so these are creations.
-    owner = ur.get_by_email(db, email=OWNER_EMAIL)
-    if owner is None:
-        owner = ur.create(
-            db,
-            email=OWNER_EMAIL,
-            password_hash=security.hash_password(owner_password),
-            full_name="Platform Owner",
-            is_active=True,
-            is_verified=True,
-        )
-        db.flush()
-        created.append(OWNER_EMAIL)
-    for slug in ("prime", "nest"):
-        m = mr.get_membership(
-            db, user_id=owner.id, business_id=businesses[slug].id
-        )
-        if m is None:
-            mr.create_membership(
-                db,
-                user_id=owner.id,
-                business_id=businesses[slug].id,
-                role_id=owner_role.id,
-                status="active",
-                is_default=(slug == "prime"),
-            )
-    # Staff (single business each, never OWNER, no password resets).
-    for email, slug, label in (
-        (PRIME_STAFF_EMAIL, "prime", "Prime Staff"),
-        (NEST_STAFF_EMAIL, "nest", "Nest Staff"),
-    ):
+    healed: list[str] = []
+
+    def ensure_user(email: str, password: str, full_name: str) -> object:
         user = ur.get_by_email(db, email=email)
         if user is None:
             user = ur.create(
-                db,
-                email=email,
-                password_hash=security.hash_password(staff_password),
-                full_name=label,
-                is_active=True,
-                is_verified=True,
+                db, email=email, password_hash=security.hash_password(password),
+                full_name=full_name, is_active=True, is_verified=True,
             )
             db.flush()
             created.append(email)
-        m = mr.get_membership(
-            db, user_id=user.id, business_id=businesses[slug].id
-        )
+        else:
+            # Heal to settings password + active/verified (demo instances only;
+            # flag false disables entirely). Never touches other users.
+            new_hash = security.hash_password(password)
+            changed = False
+            if not security.verify_password(password, user.password_hash):
+                user.password_hash = new_hash
+                changed = True
+            if not user.is_active or not user.is_verified:
+                user.is_active = True
+                user.is_verified = True
+                changed = True
+            if changed:
+                db.flush()
+                healed.append(email)
+        return user
+
+    def ensure_membership(user: object, slug: str, role: object, default: bool) -> None:
+        m = mr.get_membership(db, user_id=user.id, business_id=businesses[slug].id)
         if m is None:
             mr.create_membership(
-                db,
-                user_id=user.id,
-                business_id=businesses[slug].id,
-                role_id=staff_role.id,
-                status="active",
-                is_default=True,
+                db, user_id=user.id, business_id=businesses[slug].id,
+                role_id=role.id, status="active", is_default=default,
             )
+        else:
+            touched = False
+            if m.status != "active":
+                m.status = "active"
+                touched = True
+            if m.role_id != role.id:
+                m.role_id = role.id
+                touched = True
+            if touched:
+                db.flush()
+
+    owner = ensure_user(OWNER_EMAIL, owner_password, "Platform Owner")
+    ensure_membership(owner, "prime", owner_role, True)
+    ensure_membership(owner, "nest", owner_role, False)
+    prime_staff = ensure_user(PRIME_STAFF_EMAIL, staff_password, "Prime Staff")
+    ensure_membership(prime_staff, "prime", staff_role, True)
+    nest_staff = ensure_user(NEST_STAFF_EMAIL, staff_password, "Nest Staff")
+    ensure_membership(nest_staff, "nest", staff_role, True)
+
     db.commit()
-    return {"created": created, "skipped": False, "reason": "provisioned"}
+    STATE.update({"status": "ok", "created": len(created), "healed": len(healed), "reason": "ensured"})
+    return {"created": created, "healed": healed, "skipped": False, "reason": "ensured"}
