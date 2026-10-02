@@ -91,6 +91,20 @@ class Settings(BaseSettings):
     staff_seed_password: str = Field(default="StaffDemo123!", max_length=128)
     seed_dev_staff: bool = Field(default=True)
 
+    # --- First-boot demo bootstrap (Render free-tier owner demo) ---
+    # When True, application startup provisions the three canonical demo
+    # identities on an EMPTY database only (zero users): owner (both
+    # businesses, OWNER) + prime staff (prime only, STAFF) + nest staff
+    # (nest only, STAFF). Passwords come from OWNER_SEED_PASSWORD /
+    # STAFF_SEED_PASSWORD env when set, else the documented demo defaults
+    # above (demo instance only). Existing users are NEVER password-reset;
+    # non-empty databases are NEVER touched. After the first successful
+    # provisioning the database is non-empty so later restarts skip
+    # automatically (self-disabling; no public endpoint exists).
+    # Hardened production with real data MUST set DEMO_PROVISION_ENABLED=false
+    # before first boot (and use strong OWNER_SEED_PASSWORD).
+    demo_provision_enabled: bool = Field(default=True)
+
     # NoDecode: accept comma-separated "http://a,http://b" from env as-is;
     # the validator below splits it (otherwise pydantic-settings tries JSON).
     # Exact origins only — never "*". Dev fallback (localhost) is applied in

@@ -47,8 +47,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Production-safe base seed (Render single-service fix): ensure RBAC +
     # businesses + automation/templates exist even when worker/scheduler never
     # run (Render free tier runs only the web service). Idempotent, no users,
-    # no credentials, never blocks boot. Owner/staff provisioning stays
-    # explicit (see seed service guards) and is NOT done here.
+    # no credentials, never blocks boot.
     try:
         from app.core.database import get_session_factory
         from app.services import seed as seed_service
@@ -64,6 +63,26 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         logger.info("base seed ensured (rbac+businesses, no users)")
     except Exception as exc:  # noqa: BLE001 - seed must never block boot
         logger.warning("base seed skipped: %s", type(exc).__name__)
+    # First-boot demo bootstrap (Render free-tier, no Shell): provisions the
+    # three canonical demo identities on an EMPTY database only. Self-disabling
+    # (non-empty DBs skip), no endpoint can trigger it, passwords never logged.
+    # Hardened production sets DEMO_PROVISION_ENABLED=false before first boot.
+    try:
+        from app.core.database import get_session_factory as _factory
+        from app.services import demo_bootstrap as _demo
+
+        _db = _factory()
+        try:
+            result = _demo.bootstrap_demo_access(_db, settings)
+            if not result.get("skipped"):
+                logger.warning(
+                    "demo bootstrap provisioned=%d (demo instance only)",
+                    len(result.get("created") or []),
+                )
+        finally:
+            _db.close()
+    except Exception as exc:  # noqa: BLE001 - bootstrap must never block boot
+        logger.warning("demo bootstrap skipped: %s", type(exc).__name__)
     yield
     logger.info("stopping app")
 
