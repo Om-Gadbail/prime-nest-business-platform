@@ -44,6 +44,26 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         logger.info("rate limiter backend=%s", backend)
     except Exception as exc:  # noqa: BLE001 - limiter fallback must never block boot
         logger.warning("rate limiter configuration skipped: %s", type(exc).__name__)
+    # Production-safe base seed (Render single-service fix): ensure RBAC +
+    # businesses + automation/templates exist even when worker/scheduler never
+    # run (Render free tier runs only the web service). Idempotent, no users,
+    # no credentials, never blocks boot. Owner/staff provisioning stays
+    # explicit (see seed service guards) and is NOT done here.
+    try:
+        from app.core.database import get_session_factory
+        from app.services import seed as seed_service
+
+        factory = get_session_factory()
+        db = factory()
+        try:
+            seed_service.seed_development(
+                db, include_owner=False, include_staff=False
+            )
+        finally:
+            db.close()
+        logger.info("base seed ensured (rbac+businesses, no users)")
+    except Exception as exc:  # noqa: BLE001 - seed must never block boot
+        logger.warning("base seed skipped: %s", type(exc).__name__)
     yield
     logger.info("stopping app")
 
@@ -69,9 +89,21 @@ def create_app() -> FastAPI:
     app.add_middleware(SecurityHeadersMiddleware)
     # Safe CORS: exact origins only; empty list = same-origin only.
     # In development, allow common local dev servers when nothing is configured.
+    # In production, default to the five canonical Pages origins when nothing
+    # is configured (Render free-tier fix: explicit BACKEND_CORS_ORIGINS still
+    # wins when set). Exact origins only, never "*".
+    _CANONICAL_PAGES_ORIGINS = [
+        "https://prime-fitness.pages.dev",
+        "https://nest-library.pages.dev",
+        "https://prime-fitness-staff.pages.dev",
+        "https://nest-library-staff.pages.dev",
+        "https://prime-nest-owner.pages.dev",
+    ]
     cors_origins = list(settings.effective_cors_origins)
     if not cors_origins and not settings.is_production:
         cors_origins = ["http://localhost:3000", "http://localhost:5173"]
+    if not cors_origins and settings.is_production:
+        cors_origins = list(_CANONICAL_PAGES_ORIGINS)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=cors_origins,
