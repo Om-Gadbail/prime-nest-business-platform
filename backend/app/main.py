@@ -80,7 +80,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                     from app.core.database import get_session_factory as _factory
                     from app.services import demo_bootstrap as _demo
 
-                    _db = _factory()
+                    _sessionmaker = _factory()
+                    _db = _sessionmaker()
                     try:
                         result = _demo.bootstrap_demo_access(_db, settings)
                         if not result.get("skipped"):
