@@ -96,6 +96,17 @@ def resolve_database_key(business: "Business") -> str:
 def database_url_for_key(settings: Settings, database_key: str) -> str:
     """Settings URL for a trusted key (per-key URL or shared fallback)."""
     key = normalize_database_key(database_key)
+    # Worker edge: Hyperdrive binding wins when configured (env branch).
+    # Docker/local: falls through to the existing URL routing unchanged.
+    try:
+        from app.core.hyperdrive import hyperdrive_sqlalchemy_url, is_hyperdrive_mode
+
+        if is_hyperdrive_mode():
+            # Shared `HYPERDRIVE` binding (co-located) or per-key bindings
+            # (split) resolve inside; ValueError = misconfigured key.
+            return hyperdrive_sqlalchemy_url(key)
+    except (ImportError, ValueError):
+        pass
     return settings.database_url_for_key(key)
 
 
@@ -119,6 +130,15 @@ _session_factories: dict[str, sessionmaker[Session]] = {}
 
 
 def _build_engine(database_url: str) -> Engine:
+    # Worker edge (Hyperdrive or direct-TCP fallback): NullPool per-request
+    # connections. Docker QueuePool behavior below is unchanged.
+    try:
+        from app.core.hyperdrive import build_edge_engine, is_edge
+
+        if is_edge():
+            return build_edge_engine(database_url)
+    except ImportError:
+        pass
     kwargs: dict = {
         "pool_pre_ping": True,
         "connect_args": {"connect_timeout": 3},

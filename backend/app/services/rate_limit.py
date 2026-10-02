@@ -142,6 +142,43 @@ class RedisRateLimiter(RateLimiter):
             pass
 
 
+class RestRedisRateLimiter(RateLimiter):
+    """Distributed fixed-window limiter over Upstash REST (Worker-safe).
+
+    Same INCR+EXPIRE semantics and key format as ``RedisRateLimiter``;
+    fails OPEN on transport errors (availability over strictness).
+    """
+
+    def __init__(self, client) -> None:
+        self._client = client
+
+    def check(self, *, key: str, limit: int, window_seconds: int) -> RateLimitResult:
+        import logging as _logging
+
+        try:
+            rkey = f"ratelimit:{key}"
+            count = int(self._client.incr(rkey) or 0)
+            ttl = int(self._client.ttl(rkey))
+            if ttl < 0:
+                self._client.expire(rkey, window_seconds)
+                ttl = window_seconds
+            if count > limit:
+                return RateLimitResult(
+                    allowed=False, retry_after_seconds=max(1, int(ttl or 1))
+                )
+            return RateLimitResult(allowed=True)
+        except Exception as exc:  # noqa: BLE001 - degraded mode, never 500 on limiter
+            _logging.getLogger(__name__).warning(
+                "redis-rest limiter degraded: %s", type(exc).__name__
+            )
+            return RateLimitResult(allowed=True)
+
+    def reset(self) -> None:
+        # REST has no SCAN parity guarantee; reset is best-effort no-op at
+        # the edge (tests use the in-memory limiter). Never raises.
+        return None
+
+
 def configure_redis_limiter(settings: Settings) -> str:
     """Swap in the Redis limiter when REDIS_URL is set. Returns backend name.
 
@@ -151,6 +188,25 @@ def configure_redis_limiter(settings: Settings) -> str:
     import logging as _logging
 
     log = _logging.getLogger(__name__)
+    # Phase 2: Worker-compatible REST transport wins when configured
+    # (Upstash REST via httpx — no raw TCP in Workers isolates).
+    try:
+        from app.services import redis_rest as _rest
+
+        rest_client = _rest.rest_client_from_settings(settings)
+        if rest_client is not None:
+            try:
+                rest_client.ping()
+                set_limiter(RestRedisRateLimiter(rest_client))
+                log.info("rate limiter backend=redis-rest")
+                return "redis-rest"
+            except Exception as exc:  # noqa: BLE001 - fall through to TCP/memory
+                log.warning(
+                    "redis-rest unavailable (%s); trying redis-py/memory",
+                    type(exc).__name__,
+                )
+    except ImportError:
+        pass
     url = (getattr(settings, "redis_url", "") or "").strip()
     if not url:
         return "memory"

@@ -56,6 +56,36 @@ def acquire_tick_lease(settings: Settings, *, tick: str, lease_seconds: int) -> 
     duplicate tick degrades to no-op replays, never duplicate sends).
     """
     url = (getattr(settings, "redis_url", "") or "").strip()
+    # Phase 2: Worker-compatible REST lease wins when configured (shared
+    # across isolates; never an in-memory variable). Docker TCP path below
+    # is unchanged.
+    try:
+        from app.services import redis_rest as _rest
+
+        rest_client = _rest.rest_client_from_settings(settings)
+        if rest_client is not None:
+            try:
+                owned = bool(
+                    rest_client.set_nx_ex(
+                        f"scheduler:tick:{tick}",
+                        "1",
+                        max(30, int(lease_seconds or 120)),
+                    )
+                )
+                if not owned:
+                    logger.info(
+                        "scheduler tick=%s skipped (lease held by another replica)",
+                        tick,
+                    )
+                return owned
+            except Exception as exc:  # noqa: BLE001 - degraded mode
+                logger.warning(
+                    "scheduler lease degraded (%s); running tick anyway",
+                    type(exc).__name__,
+                )
+                return True
+    except ImportError:
+        pass
     if not url:
         return True
     try:

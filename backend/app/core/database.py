@@ -22,6 +22,16 @@ _session_factory: sessionmaker[Session] | None = None
 
 
 def _build_engine(database_url: str) -> Engine:
+    # Worker edge (Hyperdrive or direct-TCP fallback): short-lived
+    # connections, no pooled TCP sockets inside the isolate. Docker path
+    # below is unchanged.
+    try:
+        from app.core.hyperdrive import build_edge_engine, is_edge
+
+        if is_edge():
+            return build_edge_engine(database_url)
+    except ImportError:
+        pass
     kwargs: dict = {
         "pool_pre_ping": True,
         # Bound every new TCP connection so /ready degrades instead of
@@ -41,8 +51,21 @@ def get_engine() -> Engine:
     global _engine, _session_factory
     if _engine is None:
         settings = get_settings()
+        # Worker edge: the default session follows the platform binding
+        # (Hyperdrive) when present; Docker path below is unchanged.
+        database_url = settings.database_url
+        try:
+            from app.core import db_routing as _routing
+            from app.core.hyperdrive import is_hyperdrive_mode
+
+            if is_hyperdrive_mode():
+                database_url = _routing.database_url_for_key(
+                    settings, _routing.PLATFORM_DATABASE_KEY
+                )
+        except (ImportError, ValueError):
+            pass
         # Raises a clear ValidationError at startup if DATABASE_URL is bad.
-        _engine = _build_engine(settings.database_url)
+        _engine = _build_engine(database_url)
         _session_factory = sessionmaker(
             bind=_engine, autoflush=False, expire_on_commit=False
         )

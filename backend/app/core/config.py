@@ -220,6 +220,12 @@ class Settings(BaseSettings):
     # Set REDIS_URL=redis://redis:6379/0 in Docker to enable distributed rate
     # limiting + scheduler leader locking. Never commit real credentials.
     redis_url: str = Field(default="", max_length=512)
+    # --- Phase 2: Worker-compatible Redis transport (Upstash REST via httpx) ---
+    # Raw redis-py TCP cannot run inside Workers isolates. When these are set
+    # (Worker secrets, never frontend vars), the rate limiter + scheduler
+    # lease use the REST transport; Docker keeps using REDIS_URL unchanged.
+    redis_rest_url: str = Field(default="", max_length=512)
+    redis_rest_token: str = Field(default="", max_length=512)
     scheduler_enabled: bool = Field(default=True)
     scheduler_interval_seconds: int = Field(default=60, ge=10, le=3600)
     scheduler_lease_seconds: int = Field(default=120, ge=30, le=3600)
@@ -248,11 +254,19 @@ class Settings(BaseSettings):
             )
         vv = v.strip()
         if not vv.startswith(
-            ("postgresql://", "postgresql+psycopg://", "postgresql+psycopg2://")
+            (
+                "postgresql://",
+                "postgresql+psycopg://",
+                "postgresql+psycopg2://",
+                # Worker edge driver (Hyperdrive, sync SQLAlchemy only).
+                # Docker keeps using +psycopg; this only widens accepted input.
+                "postgresql+pg8000://",
+            )
         ):
             raise ValueError(
                 "DATABASE_URL must be a PostgreSQL URL starting with "
-                "'postgresql://' or 'postgresql+psycopg://'. "
+                "'postgresql://', 'postgresql+psycopg://' or "
+                "'postgresql+pg8000://'. "
                 f"Got: '{vv[:24]}...'"
             )
         return vv

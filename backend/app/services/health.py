@@ -90,6 +90,20 @@ def _database_status(*, db_up: bool) -> dict:
 
 def _redis_status(settings) -> str:
     """Best-effort Redis probe: up / down / disabled. Never raises."""
+    # Phase 2: REST transport (Worker-safe) probed first when configured.
+    try:
+        from app.services import redis_rest as _rest
+
+        if _rest.is_rest_configured(settings):
+            try:
+                client = _rest.rest_client_from_settings(settings)
+                assert client is not None
+                client.ping()
+                return "up"
+            except Exception:  # noqa: BLE001 - readiness degrades, never crashes
+                return "down"
+    except ImportError:
+        pass
     url = (getattr(settings, "redis_url", "") or "").strip()
     if not url:
         return "disabled"

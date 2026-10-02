@@ -18,6 +18,7 @@ from app.api.v1.router import router as v1_router
 from app.core.config import get_settings
 from app.core.logging import get_logger, setup_logging
 from app.middleware.body_size import BodySizeLimitMiddleware
+from app.middleware.worker_env import WorkerEnvSyncMiddleware
 from app.middleware.error_handler import register_exception_handlers
 from app.middleware.request_id import RequestIDMiddleware
 from app.middleware.security_headers import SecurityHeadersMiddleware
@@ -83,6 +84,9 @@ def create_app() -> FastAPI:
             "Idempotency-Key",
         ],
     )
+    # OUTERMOST (added last): syncs Cloudflare scope env -> os.environ per
+    # request. No-op outside Workers; see worker_env module docstring.
+    app.add_middleware(WorkerEnvSyncMiddleware)
 
     register_exception_handlers(app)
 
