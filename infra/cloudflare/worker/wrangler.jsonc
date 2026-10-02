@@ -1,0 +1,16 @@
+{
+  // Prime x Nest API — TINY forwarder Worker (permanent source of truth).
+  // Pages -> this Worker -> Access -> Tunnel -> VPS FastAPI -> Neon.
+  // NO database bindings, NO Hyperdrive, NO business logic, NO auth logic.
+  // Secrets via `wrangler secret put` (never here, never in Git).
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "prime-nest-api",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "vars": {
+    "MAX_BODY_BYTES": "1048576",
+    "FORWARD_TIMEOUT_MS": "30000"
+  }
+}

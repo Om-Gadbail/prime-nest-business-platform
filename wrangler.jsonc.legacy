@@ -1,0 +1,91 @@
+{
+  // Prime Fitness x Nest Library Business Platform — Cloudflare Worker config.
+  // PRODUCTION CUTOVER (Phase 2): Worker serves FastAPI directly via
+  // Hyperdrive → PostgreSQL. Docker Compose remains the local fallback and
+  // the migration system of record (see docs). NEVER put secrets here —
+  // use `wrangler secret put` (see docs/CLOUDFLARE_ENV.md).
+  //
+  // Entrypoint: backend/cloudflare_entry.py
+  //   from workers import asgi
+  //   Default = asgi.entrypoint(app)
+  //
+  // Provisioning (run once per environment, IDs go below):
+  //   wrangler hyperdrive create platform-db --connection-string="postgres://USER:PASSWORD@HOST:5432/DB"
+  //   wrangler hyperdrive create prime-db --connection-string="postgres://USER:PASSWORD@HOST:5432/DB"
+  //   wrangler hyperdrive create nest-db --connection-string="postgres://USER:PASSWORD@HOST:5432/DB"
+  //   (Co-located mode: create ONE hyperdrive and reuse its id 3x.)
+  //   wrangler queues create prime-nest-sweeps
+  //   wrangler queues create prime-nest-sweeps-dlq
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "prime-nest-api",
+  "main": "backend/cloudflare_entry.py",
+  // Deploy date (YYYY-MM-DD). Must be >= 2026-09-08 for Hyperdrive on
+  // Python Workers. Update on each production deploy.
+  "compatibility_date": "2026-10-01",
+  // python_dedicated_snapshot: required for the FastAPI bundle (matches the
+  // official Cloudflare fastapi example; enables the larger-package path).
+  // Proven innocent of versions-upload 10013 (diagnostic deploy without it
+  // failed identically); restored.
+  "compatibility_flags": ["python_workers", "python_dedicated_snapshot"],
+  // Hyperdrive (prime-nest-production-db, ID 004f96f9493f4ad0b69c6bce999c027d)
+  // -> Neon production. Attached as the single shared binding; the adapter
+  // resolves all three logical keys (platform/prime/nest) through it in
+  // co-located mode (see app/core/hyperdrive.py). Direct-TCP DATABASE_URL
+  // remains only as a non-Hyperdrive fallback path (unused when the binding
+  // is present).
+  "hyperdrive": [
+    {
+      "binding": "HYPERDRIVE",
+      "id": "004f96f9493f4ad0b69c6bce999c027d"
+    }
+  ],
+  // Cron/queue edge execution is DISABLED: the Python ASGI entrypoint
+  // (Default) has no scheduled/queue handlers — triggers addressed to it
+  // fail with "Method scheduled does not exist" (observed live). The Docker
+  // scheduler + worker remain the execution path (unchanged). Re-enable only
+  // with a proven handler pattern; the adapter code (app/edge/jobs.py) stays
+  // for that future wiring.
+  // Plaintext, non-secret edge config only. NEVER put SECRET_KEY,
+  // JWT_SECRET_KEY, DATABASE_URL, REDIS_URL, REDIS_REST_*, GEMINI_API_KEY,
+  // WHATSAPP_*, or PAYMENT_WEBHOOK_SECRET here.
+  "vars": {
+    "APP_NAME": "Prime Nest Business Platform",
+    "APP_VERSION": "0.1.0",
+    "APP_ENV": "production",
+    "LOG_LEVEL": "INFO",
+    "JWT_ALGORITHM": "HS256",
+    "ACCESS_TOKEN_EXPIRE_MINUTES": "30",
+    "REFRESH_TOKEN_EXPIRE_DAYS": "14",
+    "AUTH_COOKIE_SECURE": "true",
+    "AUTH_COOKIE_SAMESITE": "lax",
+    "RATE_LIMIT_ENABLED": "true",
+    "RATE_LIMIT_REQUESTS": "120",
+    "RATE_LIMIT_WINDOW_SECONDS": "60",
+    "RATE_LIMIT_PUBLIC_REQUESTS": "20",
+    "RATE_LIMIT_PUBLIC_WINDOW_SECONDS": "600",
+    "RATE_LIMIT_AUTH_REQUESTS": "30",
+    "RATE_LIMIT_AUTH_WINDOW_SECONDS": "300",
+    "MAX_BODY_BYTES": "65536",
+    "AI_ENABLED": "false",
+    "AI_PROVIDER": "noop",
+    "GEMINI_MODEL": "gemini-3.6-flash",
+    "WHATSAPP_API_VERSION": "v21.0",
+    "WHATSAPP_TIMEOUT_SECONDS": "15",
+    "WHATSAPP_MAX_ATTEMPTS": "3",
+    "AUTOMATION_ENABLED": "true",
+    "AUTOMATION_MAX_ATTEMPTS": "5",
+    "SCHEDULER_ENABLED": "true",
+    "SCHEDULER_INTERVAL_SECONDS": "60",
+    "SCHEDULER_LEASE_SECONDS": "120",
+    "WORKER_ENABLED": "true",
+    "WORKER_INTERVAL_SECONDS": "15",
+    "WORKER_BATCH_SIZE": "50",
+    // Production CORS: EXACT five Pages origins, never "*".
+    "BACKEND_CORS_ORIGINS": "https://prime-fitness.pages.dev,https://nest-library.pages.dev,https://prime-fitness-staff.pages.dev,https://nest-library-staff.pages.dev,https://prime-nest-owner.pages.dev",
+    "PUBLIC_SITE_ORIGINS": "https://prime-fitness.pages.dev,https://nest-library.pages.dev"
+  },
+  // Production observability. `wrangler tail` streams logs.
+  "observability": {
+    "enabled": true
+  }
+}

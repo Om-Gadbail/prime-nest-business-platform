@@ -1,0 +1,24 @@
+name: worker-deploy
+on:
+  push:
+    branches: [main]
+    paths: ["infra/cloudflare/worker/**"]
+  workflow_dispatch:
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    defaults: { run: { working-directory: infra/cloudflare/worker } }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: "22" }
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run deploy:dry
+      - uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: infra/cloudflare/worker
+          command: deploy
