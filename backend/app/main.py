@@ -73,27 +73,52 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         import threading as _threading
 
         def _bootstrap_in_background() -> None:
-            try:
-                from app.core.database import get_session_factory as _factory
-                from app.services import demo_bootstrap as _demo
+            import time as _time
 
-                _db = _factory()
+            for attempt in range(1, 4):
                 try:
-                    result = _demo.bootstrap_demo_access(_db, settings)
-                    if not result.get("skipped"):
-                        logger.warning(
-                            "demo bootstrap provisioned=%d (demo instance only)",
-                            len(result.get("created") or []),
+                    from app.core.database import get_session_factory as _factory
+                    from app.services import demo_bootstrap as _demo
+
+                    _db = _factory()
+                    try:
+                        result = _demo.bootstrap_demo_access(_db, settings)
+                        if not result.get("skipped"):
+                            logger.warning(
+                                "demo bootstrap provisioned=%d healed=%d (demo only)",
+                                len(result.get("created") or []),
+                                len(result.get("healed") or []),
+                            )
+                        else:
+                            logger.info(
+                                "demo bootstrap skipped reason=%s",
+                                result.get("reason"),
+                            )
+                        return
+                    finally:
+                        _db.close()
+                except Exception as exc:  # noqa: BLE001 - background, retry then record
+                    try:
+                        from app.services import demo_bootstrap as _demo_state
+
+                        _demo_state.STATE.update(
+                            {"status": "error", "reason": type(exc).__name__}
                         )
-                    else:
-                        logger.info(
-                            "demo bootstrap skipped reason=%s",
-                            result.get("reason"),
-                        )
-                finally:
-                    _db.close()
-            except Exception as exc:  # noqa: BLE001 - background, log only
-                logger.warning("demo bootstrap skipped: %s", type(exc).__name__)
+                    except Exception:
+                        pass
+                    logger.warning(
+                        "demo bootstrap attempt=%d failed: %s",
+                        attempt,
+                        type(exc).__name__,
+                    )
+                    _time.sleep(10 * attempt)
+            try:
+                from app.services import demo_bootstrap as _demo_state
+
+                if (_demo_state.STATE.get("status") or "") == "pending":
+                    _demo_state.STATE.update({"status": "error", "reason": "retries"})
+            except Exception:
+                pass
 
         _t = _threading.Thread(target=_bootstrap_in_background, daemon=True)
         _t.start()
